@@ -2581,6 +2581,18 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         Engine::GAPI->DrawParticlesSimple( ParticleRenderPass::AboveWater );
     }
 
+    if ( FrameWaterSurfaces.empty() ) {
+        // No water present: draw all transparency vobs once at the later stage
+    } else {
+        // Draw underwater transparency vobs before water so they are included in refraction and not clipped by the water depth pre-pass
+        D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
+        SetRenderingStage( DES_GHOST );
+        // Keep depth writes off here to avoid occluding water refraction
+        Engine::GAPI->DrawTransparencyVobs( GothicAPI::TransparencyPass::UnderWaterOnly, false );
+        SetRenderingStage( oldStage );
+        Engine::GAPI->DrawSkeletalVN();
+    }
+
     // Draw water surfaces of current frame
     DrawWaterSurfaces();
 
@@ -2595,11 +2607,18 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     //draw waterfall foam
     DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
 
-    // Draw ghosts
+    // Draw above-water (or all, if no water exists) transparent vobs after water so they do not get refracted
+    {
     D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
     SetRenderingStage( DES_GHOST );
-    Engine::GAPI->DrawTransparencyVobs();
+        if ( FrameWaterSurfaces.empty() ) {
+            Engine::GAPI->DrawTransparencyVobs( GothicAPI::TransparencyPass::All, true );
+        } else {
+            // Enable depth writes so post effects treat above-water transparencies correctly (e.g., against sky)
+            Engine::GAPI->DrawTransparencyVobs( GothicAPI::TransparencyPass::AboveWaterOnly, true );
+        }
     SetRenderingStage( oldStage );
+    }
     Engine::GAPI->DrawSkeletalVN();
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawFog &&
@@ -6500,6 +6519,12 @@ void D3D11GraphicsEngine::BuildFrameWaterPlanes() {
     }
 
     WaterPlanesDirty = false;
+}
+
+void D3D11GraphicsEngine::EnsureWaterPlanesBuilt() {
+    if ( WaterPlanesDirty ) {
+        BuildFrameWaterPlanes();
+    }
 }
 
 bool D3D11GraphicsEngine::IsPointUnderWater( const float3& pos ) const {

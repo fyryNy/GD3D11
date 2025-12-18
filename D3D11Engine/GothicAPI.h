@@ -273,7 +273,13 @@ public:
     /** Draws a skeletal mesh-vob */
     void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true );
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true );
-    void DrawTransparencyVobs();
+    enum class TransparencyPass {
+        All,
+        UnderWaterOnly,
+        AboveWaterOnly
+    };
+
+    void DrawTransparencyVobs( TransparencyPass pass = TransparencyPass::All, bool enableDepthWrite = false );
     void DrawSkeletalVN();
 
     /** Draws the inventory */

@@ -329,6 +329,12 @@ public:
     /** Returns true if point lies below any cached water plane */
     bool IsPointUnderWater( const float3& pos ) const;
 
+        /** Returns true if there are any water surfaces present */
+        bool HasWaterSurfaces() const { return !FrameWaterSurfaces.empty(); }
+    
+        /** Ensures that the water planes are built for the current frame */
+        void EnsureWaterPlanesBuilt();
+
     /** Returns the UI-View */
     D2DView* GetUIView() { return UIView.get(); }
 

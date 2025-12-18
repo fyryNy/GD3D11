@@ -2529,7 +2529,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
 
-void GothicAPI::DrawTransparencyVobs() {
+void GothicAPI::DrawTransparencyVobs( TransparencyPass pass, bool enableDepthWrite ) {
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     if ( !TransparencyVobs.empty() ) {
         // Setup alpha blending
@@ -2538,11 +2538,68 @@ void GothicAPI::DrawTransparencyVobs() {
         RendererState.BlendState.SetAlphaBlending();
         RendererState.BlendState.SetDirty();
         RendererState.DepthState.SetDefault();
+        RendererState.DepthState.DepthWriteEnabled = enableDepthWrite ? true : false; // Disable by default to avoid occluding later passes
         RendererState.DepthState.SetDirty();
     }
 
+    const bool filterByWater = (pass != TransparencyPass::All) && g->HasWaterSurfaces();
+    if ( filterByWater ) {
+        g->EnsureWaterPlanesBuilt();
+    }
+
+    std::vector<TransparencyVobInfo> remaining; // Vobs not rendered in this pass
+    remaining.reserve( TransparencyVobs.size() );
+
+    auto classifyWater = [&]( const TransparencyVobInfo& info ) {
+        enum class WaterClass { NoWater, Above, Under, Intersect };
+
+        if ( !filterByWater ) return WaterClass::NoWater;
+
+        zCVob* vob = info.normalVob ? info.normalVob->Vob : (info.skeletalVob ? info.skeletalVob->Vob : nullptr);
+        if ( !vob ) return WaterClass::NoWater;
+
+        zTBBox3D box = vob->GetBBox();
+        float centerX = (box.Min.x + box.Max.x) * 0.5f;
+        float centerZ = (box.Min.z + box.Max.z) * 0.5f;
+
+        float3 bottom( centerX, box.Min.y, centerZ );
+        float3 top( centerX, box.Max.y, centerZ );
+
+        bool underBottom = g->IsPointUnderWater( bottom );
+        bool underTop = g->IsPointUnderWater( top );
+
+        if ( underBottom && underTop ) return WaterClass::Under;
+        if ( !underBottom && !underTop ) return WaterClass::Above;
+        return WaterClass::Intersect;
+    };
+
     while ( !TransparencyVobs.empty() ) {
-        auto const& TransVobInfo = TransparencyVobs.front();
+        auto TransVobInfo = TransparencyVobs.front();
+        std::pop_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+        TransparencyVobs.pop_back();
+
+        auto waterClass = classifyWater( TransVobInfo );
+
+        if ( filterByWater ) {
+            if ( pass == TransparencyPass::UnderWaterOnly ) {
+                if ( waterClass == decltype(waterClass)::Above ) {
+                    remaining.push_back( TransVobInfo );
+                    continue;
+                }
+                if ( waterClass == decltype(waterClass)::Intersect ) {
+                    // Draw now for underwater portion and draw again later for above-water portion
+                    remaining.push_back( TransVobInfo );
+                }
+            } else if ( pass == TransparencyPass::AboveWaterOnly ) {
+                if ( waterClass == decltype(waterClass)::Under ) {
+                    remaining.push_back( TransVobInfo );
+                    continue;
+                }
+                if ( waterClass == decltype(waterClass)::Intersect ) {
+                    // Already drawn in underwater pass; draw again for above-water portion
+                }
+            }
+        }
 
         if ( TransVobInfo.skeletalVob ) {
             // We need to do Z-prepass first
@@ -2613,9 +2670,11 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
             }
         }
+    }
 
-        std::pop_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
-        TransparencyVobs.pop_back();
+    if ( !remaining.empty() ) {
+        TransparencyVobs.swap( remaining );
+        std::make_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
     }
 }
 
