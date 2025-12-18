@@ -6682,6 +6682,19 @@ void D3D11GraphicsEngine::DrawFrameParticles(
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
     int lastBlendMode = -1;
+
+    XMVECTOR camPos = XMVectorSet( Engine::GAPI->GetCameraPosition().x, Engine::GAPI->GetCameraPosition().y, Engine::GAPI->GetCameraPosition().z, 0.0f );
+
+    auto sortBackToFront = [&]( std::vector<ParticleInstanceInfo>& instances ) {
+        std::sort( instances.begin(), instances.end(), [&]( const ParticleInstanceInfo& a, const ParticleInstanceInfo& b ) {
+            XMVECTOR pa = XMVectorSet( a.position.x, a.position.y, a.position.z, 1.0f );
+            XMVECTOR pb = XMVectorSet( b.position.x, b.position.y, b.position.z, 1.0f );
+            float da = XMVectorGetX( XMVector3LengthSq( pa - camPos ) );
+            float db = XMVectorGetX( XMVector3LengthSq( pb - camPos ) );
+            return da > db; // back-to-front
+        } );
+    };
+
     for ( auto const& textureParticleRenderInfo : pvecRest ) {
         zCTexture* tx = std::get<0>( textureParticleRenderInfo );
         ParticleRenderInfo& partInfo = *std::get<1>( textureParticleRenderInfo );
@@ -6708,6 +6721,9 @@ void D3D11GraphicsEngine::DrawFrameParticles(
             lastBlendMode = partInfo.BlendMode;
             UpdateRenderStates();
         }
+
+        // Sort back-to-front for alpha blending to keep farther particles behind nearer ones
+        sortBackToFront( instances );
 
         // Push data for the particles to the GPU
         EnsureTempVertexBufferSize( TempParticlesVertexBuffer, sizeof( ParticleInstanceInfo ) * instances.size() );
