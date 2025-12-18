@@ -467,7 +467,7 @@ public:
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
     /** Draws particles, in a simple way */
-    void DrawParticlesSimple();
+    void DrawParticlesSimple( ParticleRenderPass pass = ParticleRenderPass::All );
 
     /** Prepares poly strips for feeding into renderer (weapon and effect trails) */
     void CalcPolyStripMeshes();

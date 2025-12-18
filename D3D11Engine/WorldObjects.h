@@ -28,6 +28,12 @@ struct ParticleRenderInfo {
     int BlendMode;
 };
 
+enum class ParticleRenderPass {
+    All,
+    UnderWater,
+    AboveWater
+};
+
 struct ParticleInstanceInfo {
     float3 position;
     float4 color;

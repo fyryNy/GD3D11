@@ -2519,6 +2519,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // Clear textures from the last frame
     RenderedVobs.clear();
     FrameWaterSurfaces.clear();
+    FrameWaterPlanes.clear();
+    WaterPlanesDirty = true;
     FrameTransparencyMeshes.clear();
     FrameTransparencyMeshesPortal.clear();
     FrameTransparencyMeshesWaterfall.clear();
@@ -2561,6 +2563,23 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     }
     
     // PfxRenderer->RenderDistanceBlur();
+
+    // Decide where to render above-water particles depending on camera position relative to water
+    bool cameraUnderWater = false;
+    if ( !FrameWaterSurfaces.empty() ) {
+        if ( WaterPlanesDirty ) {
+            BuildFrameWaterPlanes();
+        }
+
+        cameraUnderWater = IsPointUnderWater( Engine::GAPI->GetCameraPosition() );
+    }
+
+    Engine::GAPI->DrawParticlesSimple( ParticleRenderPass::UnderWater );
+
+    // If the camera is underwater, render above-water particles now so they appear through the refractive surface
+    if ( cameraUnderWater ) {
+        Engine::GAPI->DrawParticlesSimple( ParticleRenderPass::AboveWater );
+    }
 
     // Draw water surfaces of current frame
     DrawWaterSurfaces();
@@ -2624,7 +2643,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         PfxRenderer->RenderGodRays();
 
     // DrawParticleEffects();
-    Engine::GAPI->DrawParticlesSimple();
+    if ( !cameraUnderWater ) {
+        Engine::GAPI->DrawParticlesSimple( ParticleRenderPass::AboveWater );
+    }
 
 #if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
     // Calc weapon/effect trail mesh data
@@ -6419,11 +6440,127 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
     }
 }
 
+void D3D11GraphicsEngine::BuildFrameWaterPlanes() {
+    FrameWaterPlanes.clear();
+
+    if ( FrameWaterSurfaces.empty() ) {
+        WaterPlanesDirty = false;
+        return;
+    }
+
+    const XMVECTOR up = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+
+    for ( const auto& textureMeshes : FrameWaterSurfaces ) {
+        for ( const WorldMeshInfo* mesh : textureMeshes.second ) {
+            if ( !mesh || mesh->Vertices.size() < 3 ) continue;
+
+            WaterPlaneInfo plane = {};
+            bool normalFound = false;
+
+            for ( size_t i = 0; i + 2 < mesh->Vertices.size(); ++i ) {
+                const float3& p0f = mesh->Vertices[i].Position;
+                const float3& p1f = mesh->Vertices[i + 1].Position;
+                const float3& p2f = mesh->Vertices[i + 2].Position;
+
+                XMVECTOR p0 = XMVectorSet( p0f.x, p0f.y, p0f.z, 1.0f );
+                XMVECTOR p1 = XMVectorSet( p1f.x, p1f.y, p1f.z, 1.0f );
+                XMVECTOR p2 = XMVectorSet( p2f.x, p2f.y, p2f.z, 1.0f );
+
+                XMVECTOR n = XMVector3Cross( p1 - p0, p2 - p0 );
+                float lenSq = XMVectorGetX( XMVector3LengthSq( n ) );
+                if ( lenSq < 1e-6f ) continue;
+
+                n = XMVector3Normalize( n );
+                float upDot = XMVectorGetX( XMVector3Dot( n, up ) );
+
+                // Ignore non-horizontal planes
+                if ( fabsf( upDot ) < 0.2f ) continue;
+                if ( upDot < 0.0f ) n = XMVectorNegate( n );
+
+                XMStoreFloat3( &plane.normal, n );
+                plane.point = p0f;
+                normalFound = true;
+                break;
+            }
+
+            if ( !normalFound ) continue;
+
+            plane.minX = plane.maxX = mesh->Vertices[0].Position.x;
+            plane.minZ = plane.maxZ = mesh->Vertices[0].Position.z;
+
+            for ( const auto& vx : mesh->Vertices ) {
+                plane.minX = std::min( plane.minX, vx.Position.x );
+                plane.maxX = std::max( plane.maxX, vx.Position.x );
+                plane.minZ = std::min( plane.minZ, vx.Position.z );
+                plane.maxZ = std::max( plane.maxZ, vx.Position.z );
+            }
+
+            FrameWaterPlanes.push_back( plane );
+        }
+    }
+
+    WaterPlanesDirty = false;
+}
+
+bool D3D11GraphicsEngine::IsPointUnderWater( const float3& pos ) const {
+    if ( FrameWaterPlanes.empty() ) return false;
+
+    constexpr float margin = 0.01f;
+    XMVECTOR point = XMVectorSet( pos.x, pos.y, pos.z, 1.0f );
+
+    for ( const auto& plane : FrameWaterPlanes ) {
+        if ( pos.x < plane.minX - margin || pos.x > plane.maxX + margin ||
+            pos.z < plane.minZ - margin || pos.z > plane.maxZ + margin ) {
+            continue;
+        }
+
+        XMVECTOR p0 = XMVectorSet( plane.point.x, plane.point.y, plane.point.z, 1.0f );
+        XMVECTOR normal = XMVectorSet( plane.normal.x, plane.normal.y, plane.normal.z, 0.0f );
+
+        float signedDist = XMVectorGetX( XMVector3Dot( normal, point - p0 ) );
+        if ( signedDist < -margin ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /** Draws particle effects */
 void D3D11GraphicsEngine::DrawFrameParticles(
     std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles,
-    std::map<zCTexture*, ParticleRenderInfo>& info ) {
+    std::map<zCTexture*, ParticleRenderInfo>& info,
+    ParticleRenderPass pass ) {
     if ( particles.empty() ) return;
+
+    const bool hasWater = !FrameWaterSurfaces.empty();
+    if ( pass == ParticleRenderPass::UnderWater && !hasWater ) return;
+
+    if ( hasWater && WaterPlanesDirty ) {
+        BuildFrameWaterPlanes();
+    }
+
+    const bool useFilter = (pass != ParticleRenderPass::All) && !FrameWaterPlanes.empty();
+    std::map<zCTexture*, std::vector<ParticleInstanceInfo>> filteredParticles;
+    std::map<zCTexture*, std::vector<ParticleInstanceInfo>>* particlesToDraw = &particles;
+
+    if ( useFilter ) {
+        for ( const auto& [texture, instances] : particles ) {
+            std::vector<ParticleInstanceInfo>& dst = filteredParticles[texture];
+
+            for ( const auto& inst : instances ) {
+                bool underWater = IsPointUnderWater( inst.position );
+                if ( (pass == ParticleRenderPass::UnderWater && underWater) ||
+                    (pass == ParticleRenderPass::AboveWater && !underWater) ) {
+                    dst.push_back( inst );
+                }
+            }
+        }
+
+        particlesToDraw = &filteredParticles;
+    }
+
+    if ( particlesToDraw->empty() ) return;
     SetDefaultStates();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -6460,7 +6597,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     std::vector<std::tuple<zCTexture*, ParticleRenderInfo*, std::vector<ParticleInstanceInfo>*>> pvecAdd;
     std::vector<std::tuple<zCTexture*, ParticleRenderInfo*, std::vector<ParticleInstanceInfo>*>> pvecRest;
-    for ( auto&& textureParticle : particles ) {
+    for ( auto&& textureParticle : *particlesToDraw ) {
         if ( textureParticle.second.empty() ) continue;
 
         ParticleRenderInfo* ri = &info[textureParticle.first];

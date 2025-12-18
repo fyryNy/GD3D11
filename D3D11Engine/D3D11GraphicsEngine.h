@@ -321,7 +321,13 @@ public:
     void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes );
 
     /** Draws particle effects */
-    void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info );
+    void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info, ParticleRenderPass pass );
+
+    /** Builds water plane cache for current frame */
+    void BuildFrameWaterPlanes();
+
+    /** Returns true if point lies below any cached water plane */
+    bool IsPointUnderWater( const float3& pos ) const;
 
     /** Returns the UI-View */
     D2DView* GetUIView() { return UIView.get(); }
@@ -395,6 +401,19 @@ protected:
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<WorldMeshInfo*>> FrameWaterSurfaces;
+
+    struct WaterPlaneInfo {
+        float3 point;
+        XMFLOAT3 normal;
+        float minX;
+        float maxX;
+        float minZ;
+        float maxZ;
+    };
+
+    /** Cached water planes for the current frame */
+    std::vector<WaterPlaneInfo> FrameWaterPlanes;
+    bool WaterPlanesDirty = true;
 
     /** List of worldmeshes we have to render using alphablending */
     std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshes;

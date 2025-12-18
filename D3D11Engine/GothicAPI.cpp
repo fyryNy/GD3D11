@@ -1039,7 +1039,7 @@ void GothicAPI::DrawWorldMeshNaive() {
 }
 
 /** Draws particles, in a simple way */
-void GothicAPI::DrawParticlesSimple() {
+void GothicAPI::DrawParticlesSimple( ParticleRenderPass pass ) {
     ParticleFrameData data;
 
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
@@ -1056,7 +1056,7 @@ void GothicAPI::DrawParticlesSimple() {
         }
 
         Engine::GraphicsEngine->DrawFrameParticleMeshes( ParticleEffectProgMeshes );
-        Engine::GraphicsEngine->DrawFrameParticles( FrameParticles, FrameParticleInfo );
+        Engine::GraphicsEngine->DrawFrameParticles( FrameParticles, FrameParticleInfo, pass );
     }
 }
 
