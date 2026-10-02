@@ -20,14 +20,6 @@ cbuffer HDR_Settings : register(b0)
 
 #include "HDRColor.hlsli"
 
-float3 HDRExposeScene(float3 encodedColor, Texture2D lumTex, SamplerState samplerState)
-{
-	float legacyAverage = max(lumTex.SampleLevel(samplerState, float2(0.5f, 0.5f), 9).r, 0.0001f);
-	float linearAverage = max(HDRSRGBToLinear(legacyAverage.xxx).r, 0.0001f);
-	float targetAverage = HDRSRGBToLinear(max(HDR_MiddleGray, 0.0001f).xxx).r;
-	return HDRSRGBToLinear(encodedColor) * (targetAverage / linearAverage);
-}
-
 float3 ToneMap_Reinhard(float3 vColor, Texture2D lumTex, SamplerState samplerState)
 {
 	// Get the calculated average luminance

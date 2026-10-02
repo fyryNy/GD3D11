@@ -15,6 +15,11 @@ const int LUM_SIZE = 512;
 const int LUM_MIP_LEVELS = 10; // 512 through 1, including the base level.
 
 namespace {
+void BindLuminance( D3D11GraphicsEngine* engine, RenderToTextureBuffer* lum ) {
+	ID3D11ShaderResourceView* srv = lum ? lum->GetShaderResView().Get() : nullptr;
+	engine->GetContext()->PSSetShaderResources( 1, 1, &srv );
+}
+
 HDRSettingsConstantBuffer MakeHDRSettings( D3D11GraphicsEngine* engine ) {
 	const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	HDRSettingsConstantBuffer hcb = {};
@@ -66,7 +71,11 @@ XRESULT D3D11PFX_HDR::Render( RenderToTextureBuffer* fxbuffer ) {
 	Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
 	engine->GetContext()->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
-	RenderToTextureBuffer* lum = CalcLuminance();
+	// Only the optional SDR tone mapper uses eye adaptation. Native HDR
+	// preserves scene exposure and does not need to meter the screen.
+	const bool hdrOutput = engine->IsHDROutputActive();
+	if ( hdrOutput ) LuminanceInitialized = false; // Refresh adaptation when returning to SDR.
+	RenderToTextureBuffer* lum = hdrOutput ? nullptr : CalcLuminance();
 	if ( Engine::GAPI->GetRendererState().RendererSettings.EnableHDR )
 		CreateBloom( lum );
 
@@ -75,7 +84,7 @@ XRESULT D3D11PFX_HDR::Render( RenderToTextureBuffer* fxbuffer ) {
 
 	// Bind scene and luminance
 	FxRenderer->GetTempBuffer().BindToPixelShader( engine->GetContext().Get(), 0 );
-	lum->BindToPixelShader( engine->GetContext().Get(), 1 );
+	BindLuminance( engine, lum );
 
 	// Bind bloom
 	FxRenderer->GetTempBufferDS4_1().BindToPixelShader( engine->GetContext().Get(), 2 );
@@ -114,7 +123,7 @@ void D3D11PFX_HDR::CreateBloom( RenderToTextureBuffer* lum ) {
 	tonemapPS->GetConstantBuffer()[0]->UpdateBuffer( &hcb );
 	tonemapPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-	lum->BindToPixelShader( engine->GetContext().Get(), 1 );
+	BindLuminance( engine, lum );
 	FxRenderer->CopyTextureToRTV( engine->GetHDRBackBuffer().GetShaderResView(), FxRenderer->GetTempBufferDS4_1().GetRenderTargetView(), dsRes, true );
 
 	auto gaussPS = engine->GetShaderManager().GetPShader( "PS_PFX_GaussBlur" );

@@ -34,7 +34,10 @@ float4 PSMain(PS_INPUT input) : SV_TARGET
     if (!hdrOutput)
         scene = saturate(scene);
 
-    float whiteScale = hdrOutput ? max(G_HDRPaperWhiteNits, 1.0f) / 80.0f : 1.0f;
+    // The engine supplies the display's reference white explicitly. SDR menus
+    // and video in an FP16 surface need the Windows SDR white on HDR desktops
+    // even when native HDR scene output is inactive; SDR desktops supply 80.
+    float whiteScale = max(G_HDRPaperWhiteNits, 1.0f) / 80.0f;
     float3 color = HDRSRGBToLinear(scene) * whiteScale;
 
     // AntTweakBar's old backend does not preserve usable destination alpha.
@@ -52,7 +55,7 @@ float4 PSMain(PS_INPUT input) : SV_TARGET
     float3 uiColor = d2d.rgb / max(alpha, 0.0001f);
     color = color * (1.0f - alpha) + HDRSRGBToLinear(uiColor) * alpha * whiteScale;
 
-    float peak = hdrOutput ? max(G_HDRPeakNits, 1.0f) / 80.0f : 1.0f;
+    float peak = max(G_HDRPeakNits, 1.0f) / 80.0f;
     float brightest = max(color.r, max(color.g, color.b));
     color *= min(1.0f, peak / max(brightest, 0.0001f));
     return float4(max(color, 0.0f), 1.0f);

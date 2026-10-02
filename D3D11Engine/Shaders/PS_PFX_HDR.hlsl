@@ -35,7 +35,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float3 HDRColor = sample.rgb;
 	if (HDR_Output > 0.5f)
 	{
-		float3 linearColor = HDRExposeScene(HDRColor, TX_Lum, SS_Linear);
+		// Keep Gothic's authored exposure. A bright sky must not dim the
+		// entire scene merely because HDR display output is enabled.
+		float3 linearColor = HDRSRGBToLinear(HDRColor);
 		if (HDR_BloomStrength > 0.0f)
 			linearColor += max(TX_Bloom.Sample(SS_Linear, Input.vTexcoord).rgb, 0.0f) * HDR_BloomStrength;
 		float peakRelativeToWhite = HDR_PeakNits / max(HDR_PaperWhiteNits, 1.0f);

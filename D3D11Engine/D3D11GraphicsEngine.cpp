@@ -19,6 +19,7 @@
 #include "GMesh.h"
 #include "GSky.h"
 #include "RenderToTextureBuffer.h"
+#include "HDRDisplayCalibration.h"
 #include "zCParticleFX.h"
 #include "zCDecal.h"
 #include "zCMaterial.h"
@@ -112,6 +113,9 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     m_swapchainflip = false;
     m_HDR = false;
     m_HDRSwapChain = false;
+    m_HDRDesktopActive = false;
+    m_HDRSceneRendered = false;
+    m_SDRWhiteNits = 80.0f;
     m_HDRDisplayPeakNits = 1000.0f;
     m_HDRLastOutputCheck = 0;
     m_lowlatency = false;
@@ -1114,6 +1118,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
+    m_HDRSceneRendered = false;
     // Refresh after Windows HDR changes, hotplug, or moving to another monitor.
     const DWORD outputCheckTime = GetTickCount();
     if ( m_HDRSwapChain && outputCheckTime - m_HDRLastOutputCheck >= 1000 )
@@ -1494,9 +1499,13 @@ XRESULT D3D11GraphicsEngine::Present() {
         gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
         gcb.G_TextureSize = GetResolution();
         gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-        gcb.G_HDROutput = m_HDR ? 1.0f : 0.0f;
-        gcb.G_HDRPaperWhiteNits = m_HDR ? GetHDRPaperWhiteNits() : 80.0f;
-        gcb.G_HDRPeakNits = m_HDR ? GetHDRPeakNits() : 80.0f;
+        // Main menus and Bink frames are authored SDR and bypass world tone
+        // mapping. Match Windows' SDR white rather than dimming them to 80 nits.
+        const bool hdrScene = m_HDR && m_HDRSceneRendered
+            && !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning;
+        gcb.G_HDROutput = hdrScene ? 1.0f : 0.0f;
+        gcb.G_HDRPaperWhiteNits = hdrScene ? GetHDRPaperWhiteNits() : m_SDRWhiteNits;
+        gcb.G_HDRPeakNits = hdrScene ? GetHDRPeakNits() : m_SDRWhiteNits;
         ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
         ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
         // Bind the destination before exposing menu textures as shader inputs.
@@ -2790,8 +2799,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     LineRenderer->Flush();
     LineRenderer->FlushScreenSpace();
 
-    if ( m_HDR || Engine::GAPI->GetRendererState().RendererSettings.EnableHDR )
-        PfxRenderer->RenderHDR();
+    if ( m_HDR || Engine::GAPI->GetRendererState().RendererSettings.EnableHDR ) {
+        m_HDRSceneRendered = XR_SUCCESS == PfxRenderer->RenderHDR() && m_HDR;
+    }
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableSMAA ) {
         PfxRenderer->RenderSMAA();
@@ -2908,9 +2918,14 @@ float D3D11GraphicsEngine::GetHDRPaperWhiteNits() const {
 }
 
 void D3D11GraphicsEngine::UpdateColorSpace_SwapChain() {
+    const bool firstCheck = m_HDRLastOutputCheck == 0;
     m_HDRLastOutputCheck = GetTickCount();
     const bool wasHDR = m_HDR;
+    const bool wasHDRDesktop = m_HDRDesktopActive;
+    const float previousSDRWhite = m_SDRWhiteNits;
     m_HDR = false;
+    m_HDRDesktopActive = false;
+    m_SDRWhiteNits = 80.0f;
     wrl::ComPtr<IDXGISwapChain3> swapChain3;
     if ( FAILED( SwapChain.As( &swapChain3 ) ) ) return;
 
@@ -2921,7 +2936,7 @@ void D3D11GraphicsEngine::UpdateColorSpace_SwapChain() {
         && (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)
         && SUCCEEDED( swapChain3->SetColorSpace1( colorSpace ) );
 
-    if ( m_HDRSwapChain && validColorSpace && Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor ) {
+    if ( validColorSpace ) {
         // A fresh factory is required after desktop display-mode changes. The
         // window's monitor may also belong to a different adapter from Device.
         if ( !m_HDROutputFactory || !m_HDROutputFactory->IsCurrent() ) {
@@ -2950,7 +2965,8 @@ void D3D11GraphicsEngine::UpdateColorSpace_SwapChain() {
                     DXGI_OUTPUT_DESC1 desc = {};
                     if ( SUCCEEDED( output.As( &output6 ) ) && SUCCEEDED( output6->GetDesc1( &desc ) )
                         && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
-                        m_HDR = true;
+                        m_HDRDesktopActive = true;
+                        m_HDR = m_HDRSwapChain && Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor;
                         m_HDRDisplayPeakNits = std::isfinite( desc.MaxLuminance ) && desc.MaxLuminance >= 80.0f
                             ? std::min( 10000.0f, desc.MaxLuminance ) : 1000.0f;
                     }
@@ -2959,9 +2975,22 @@ void D3D11GraphicsEngine::UpdateColorSpace_SwapChain() {
             }
         }
     }
-    if ( wasHDR != m_HDR ) {
-        LogInfo() << (m_HDR ? "HDR display output active: FP16 scRGB, peak nits: " : "SDR display output active, peak nits: ")
-            << (m_HDR ? GetHDRPeakNits() : 80.0f);
+    bool sdrWhiteFromWindows = false;
+    if ( m_HDRDesktopActive ) {
+        // Manual world paper white stays independent of the desktop's SDR
+        // calibration. Missing Windows query support gets a useful HDR default.
+        m_SDRWhiteNits = 203.0f;
+        sdrWhiteFromWindows = QueryWindowsSDRWhiteNits( OutputWindow, m_SDRWhiteNits );
+    }
+    if ( firstCheck || wasHDR != m_HDR || wasHDRDesktop != m_HDRDesktopActive
+        || std::abs( previousSDRWhite - m_SDRWhiteNits ) > 0.5f ) {
+        LogInfo() << "Display output: " << (m_HDRSwapChain ? "FP16 scRGB" : "BGRA8 SDR")
+            << ", Windows HDR: " << (m_HDRDesktopActive ? "on" : "off")
+            << ", HDR scene: " << (m_HDR ? "enabled" : "disabled")
+            << ", SDR/menu white nits: " << m_SDRWhiteNits
+            << (m_HDRDesktopActive ? (sdrWhiteFromWindows ? " (Windows setting)" : " (fallback)") : " (SDR reference)")
+            << ", HDR paper white nits: " << (m_HDR ? GetHDRPaperWhiteNits() : 80.0f)
+            << ", HDR peak nits: " << (m_HDR ? GetHDRPeakNits() : 80.0f);
     }
 }
 

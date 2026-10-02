@@ -474,6 +474,9 @@ protected:
     bool m_lowlatency;
     bool m_HDR;
     bool m_HDRSwapChain;
+    bool m_HDRDesktopActive;
+    bool m_HDRSceneRendered;
+    float m_SDRWhiteNits;
     float m_HDRDisplayPeakNits;
     DWORD m_HDRLastOutputCheck;
     Microsoft::WRL::ComPtr<IDXGIFactory1> m_HDROutputFactory;

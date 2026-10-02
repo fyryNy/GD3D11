@@ -36,12 +36,12 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float3 HDRColor = sample.rgb;
 	if (HDR_Output > 0.5f)
 	{
-		float3 exposed = HDRExposeScene(HDRColor, TX_Lum, SS_Linear);
+		float3 linearColor = HDRSRGBToLinear(HDRColor);
 		// Extract unbounded linear highlights before the display shoulder.
-		float brightest = max(exposed.r, max(exposed.g, exposed.b));
+		float brightest = max(linearColor.r, max(linearColor.g, linearColor.b));
 		float threshold = max(HDR_Threshold, 0.0f);
 		float brightFraction = max(brightest - threshold, 0.0f) / max(brightest, 0.0001f);
-		return float4(exposed * brightFraction, 1.0f);
+		return float4(linearColor * brightFraction, 1.0f);
 	}
 	
 	// Determine what the pixel's value will be after tone-mapping occurs
