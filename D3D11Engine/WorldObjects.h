@@ -28,6 +28,12 @@ struct ParticleRenderInfo {
     int BlendMode;
 };
 
+enum class ParticleRenderPass {
+    All,
+    BeforeWater,
+    AfterWater
+};
+
 struct ParticleInstanceInfo {
     float3 position;
     float4 color;
@@ -35,6 +41,10 @@ struct ParticleInstanceInfo {
     int drawMode; // 0 = billboard, 1 = y-locked billboard, 2 = y-plane, 3 = velo aligned
     float3 velocity;
 };
+
+using ParticleBatchKey = std::pair<zCTexture*, int>;
+using ParticleInstanceMap = std::map<ParticleBatchKey, std::vector<ParticleInstanceInfo>>;
+using ParticleRenderInfoMap = std::map<ParticleBatchKey, ParticleRenderInfo>;
 
 struct RainParticleInstanceInfo {
     float3 position;

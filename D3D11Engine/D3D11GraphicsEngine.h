@@ -115,7 +115,7 @@ public:
     virtual XRESULT DrawVertexBufferIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
 
     /** Draws a vertexbuffer, instanced */
-    XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) );
+    XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ), unsigned int startInstance = 0 );
     XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 );
     XRESULT DrawVertexBufferInstancedIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset );
 
@@ -318,10 +318,13 @@ public:
     void CopyDepthStencil();
 
     /** Draws particle meshes */
-    void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes );
+    void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes, ParticleRenderPass pass );
 
-    /** Draws particle effects */
-    void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info );
+    /** Sorts and uploads all particle instances once for the current frame. */
+    void PrepareFrameParticles( const ParticleInstanceMap& particles, const ParticleRenderInfoMap& info ) override;
+
+    /** Draws a clipped pass from the prepared particle buffer. */
+    void DrawFrameParticles( ParticleRenderPass pass ) override;
 
     /** Returns the UI-View */
     D2DView* GetUIView() { return UIView.get(); }
@@ -395,6 +398,23 @@ protected:
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<WorldMeshInfo*>> FrameWaterSurfaces;
+
+    /** Depth used to clip transparency behind the visible water surface. */
+    std::unique_ptr<RenderToDepthStencilBuffer> FrameWaterDepth;
+
+    /** Early particle distortion must preserve the scene normals for god rays. */
+    std::unique_ptr<RenderToTextureBuffer> EarlyParticleDistortion;
+
+    void BuildFrameWaterDepth();
+
+    struct FrameParticleBatch {
+        zCTexture* Texture;
+        ParticleRenderInfo RenderInfo;
+        UINT FirstInstance;
+        UINT NumInstances;
+    };
+    std::vector<FrameParticleBatch> FrameAdditiveParticleBatches;
+    std::vector<FrameParticleBatch> FrameAlphaParticleBatches;
 
     /** List of worldmeshes we have to render using alphablending */
     std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshes;

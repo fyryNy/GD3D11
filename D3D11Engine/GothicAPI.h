@@ -273,7 +273,7 @@ public:
     /** Draws a skeletal mesh-vob */
     void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true );
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true );
-    void DrawTransparencyVobs();
+    void DrawTransparencyVobs( ParticleRenderPass pass = ParticleRenderPass::All );
     void DrawSkeletalVN();
 
     /** Draws the inventory */
@@ -466,8 +466,18 @@ public:
     /** Recursive helper function to draw the BSP-Tree */
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
-    /** Draws particles, in a simple way */
-    void DrawParticlesSimple();
+    /** Checks whether water may need to split transparent objects this frame */
+    bool NeedsWaterTransparencyPass() const {
+        return !TransparencyVobs.empty() ||
+            (RendererState.RendererSettings.DrawParticleEffects &&
+                (!ParticleEffectVobs.empty() || !ParticleEffectProgMeshes.empty()));
+    }
+
+    /** Updates visible particle effects and prepares their instances once per frame */
+    void PrepareParticles();
+
+    /** Draws the particle instances prepared for the current frame */
+    void DrawParticlesSimple( ParticleRenderPass pass = ParticleRenderPass::All );
 
     /** Prepares poly strips for feeding into renderer (weapon and effect trails) */
     void CalcPolyStripMeshes();
@@ -654,7 +664,7 @@ public:
     SkeletalVobInfo* GetSkeletalVobByVob( zCVob* vob );
 
     /** Returns the frame particle info collected from all DrawParticleFX-Calls */
-    std::map<zCTexture*, ParticleRenderInfo>& GetFrameParticleInfo();
+    ParticleRenderInfoMap& GetFrameParticleInfo();
 
     /** Checks if the normalmaps are there */
     bool CheckNormalmapFilesOld();
@@ -736,8 +746,8 @@ private:
     /** Currently bound textures from gothic */
     zCTexture* BoundTextures[8];
 
-    std::map<zCTexture*, std::vector<ParticleInstanceInfo>> FrameParticles;
-    std::map<zCTexture*, ParticleRenderInfo> FrameParticleInfo;
+    ParticleInstanceMap FrameParticles;
+    ParticleRenderInfoMap FrameParticleInfo;
 
     /** Loaded game sections */
     std::map<int, std::map<int, WorldMeshSectionInfo>> WorldSections;

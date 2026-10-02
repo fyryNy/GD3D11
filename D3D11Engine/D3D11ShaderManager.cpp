@@ -156,10 +156,17 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo( "PS_Simple", "PS_Simple.hlsl", "p" ) );
 
+    std::vector<D3D_SHADER_MACRO> waterMakros = { { "WATER_CLIP", "1" } };
+    Shaders.push_back( ShaderInfo( "PS_SimpleWater", "PS_Simple.hlsl", "p", waterMakros ) );
+
     Shaders.push_back( ShaderInfo( "PS_Rain", "PS_Rain.hlsl", "p" ) );
 
     Shaders.push_back( ShaderInfo( "PS_Transparency", "PS_Transparency.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GhostAlphaConstantBuffer ) );
+
+    Shaders.push_back( ShaderInfo( "PS_TransparencyWater", "PS_Transparency.hlsl", "p", waterMakros ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( GhostAlphaConstantBuffer ) );
+    Shaders.push_back( ShaderInfo( "PS_TransparencyDepthWater", "PS_TransparencyDepthWater.hlsl", "p" ) );
 
     Shaders.push_back( ShaderInfo( "PS_World", "PS_World.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
@@ -174,6 +181,9 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( RefractionInfoConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "PS_ParticleDistortion", "PS_ParticleDistortion.hlsl", "p" ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( RefractionInfoConstantBuffer ) );
+
+    Shaders.push_back( ShaderInfo( "PS_ParticleDistortionWater", "PS_ParticleDistortion.hlsl", "p", waterMakros ) );
     Shaders.back().cBufferSizes.push_back( sizeof( RefractionInfoConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "PS_PFX_ApplyParticleDistortion", "PS_PFX_ApplyParticleDistortion.hlsl", "p" ) );

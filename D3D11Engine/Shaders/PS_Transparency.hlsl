@@ -11,6 +11,10 @@ cbuffer GhostAlphaInfo : register( b0 )
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
 //--------------------------------------------------------------------------------------
+#ifdef WATER_CLIP
+#include "WaterTransparency.hlsli"
+#endif
+
 SamplerState SS_Linear : register( s0 );
 Texture2D	TX_Texture0 : register( t0 );
 Texture2D	TX_Scene : register( t5 );
@@ -33,6 +37,10 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
+#ifdef WATER_CLIP
+	ClipBehindWater( Input.vPosition );
+#endif
+
 	//float2 screenUV = Input.vPosition.xy / GA_ViewportSize;
 	//float3 screenColor = TX_Scene.Sample(SS_Linear, screenUV).rgb;
 	//float screenLuma = 0.2126 * screenColor.r + 0.7125 * screenColor.g + 0.0722 * screenColor.b;

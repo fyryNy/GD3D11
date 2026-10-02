@@ -16,6 +16,10 @@ cbuffer RefractionInfo : register( b0 )
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
 //--------------------------------------------------------------------------------------
+#ifdef WATER_CLIP
+#include "WaterTransparency.hlsli"
+#endif
+
 SamplerState SS_Linear : register( s0 );
 Texture2D	TX_Texture0 : register( t0 );
 
@@ -43,6 +47,10 @@ struct PS_OUTPUT
 //--------------------------------------------------------------------------------------
 PS_OUTPUT PSMain( PS_INPUT Input )
 {
+#ifdef WATER_CLIP
+	ClipBehindWater( Input.vPosition );
+#endif
+
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	color *= Input.vDiffuse;
 	
@@ -60,4 +68,3 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	o.gb1 = float4(uvCenter * float2(-1,1) * weight, 0, color.a);
 	return o;
 }
-

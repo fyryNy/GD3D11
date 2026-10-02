@@ -850,6 +850,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     // Release all referenced buffer resources before we can resize the swapchain. Needed!
     BackbufferRTV.Reset();
     DepthStencilBuffer.reset();
+    FrameWaterDepth.reset();
+    EarlyParticleDistortion.reset();
 
     if ( UIView ) UIView->PrepareResize();
 
@@ -1583,7 +1585,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
 /** Draws a vertexbuffer, instanced */
 XRESULT D3D11GraphicsEngine::DrawVertexBufferInstanced(
     D3D11VertexBuffer* vb, unsigned int numVertices,
-    unsigned int numInstances, unsigned int stride ) {
+    unsigned int numInstances, unsigned int stride, unsigned int startInstance ) {
 #ifdef RECORD_LAST_DRAWCALL
     g_LastDrawCall.Type = DrawcallInfo::VB;
     g_LastDrawCall.NumElements = numVertices;
@@ -1597,7 +1599,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstanced(
     Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     // Draw the mesh
-    Context->DrawInstanced( numVertices, numInstances, 0, 0 );
+    Context->DrawInstanced( numVertices, numInstances, 0, startInstance );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
         numVertices / 3;
@@ -2566,6 +2568,30 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     
     // PfxRenderer->RenderDistanceBlur();
 
+    const bool splitTransparency = !FrameWaterSurfaces.empty() && Engine::GAPI->NeedsWaterTransparencyPass();
+    if ( splitTransparency ) {
+        BuildFrameWaterDepth();
+        FrameWaterDepth->BindToPixelShader( GetContext(), 6 );
+
+        // Only fragments behind visible water enter its refraction source.
+        GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
+            DepthStencilBuffer->GetDepthStencilView().Get() );
+        Engine::GAPI->ResetRenderStates();
+        D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
+        SetRenderingStage( DES_GHOST );
+        Engine::GAPI->DrawTransparencyVobs( ParticleRenderPass::BeforeWater );
+        SetRenderingStage( oldStage );
+
+        // Ghosts update their attachments before particle instances capture
+        // the attached emitters' transforms. Both passes reuse this data.
+        Engine::GAPI->ResetRenderStates();
+        Engine::GAPI->PrepareParticles();
+        Engine::GAPI->DrawParticlesSimple( ParticleRenderPass::BeforeWater );
+
+        ID3D11ShaderResourceView* noWaterDepth = nullptr;
+        GetContext()->PSSetShaderResources( 6, 1, &noWaterDepth );
+    }
+
     // Draw water surfaces of current frame
     DrawWaterSurfaces();
 
@@ -2580,10 +2606,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     //draw waterfall foam
     DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
 
-    // Draw ghosts
+    // Water depth rejects the fragments already drawn into refraction.
     D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
     SetRenderingStage( DES_GHOST );
-    Engine::GAPI->DrawTransparencyVobs();
+    Engine::GAPI->DrawTransparencyVobs( splitTransparency
+        ? ParticleRenderPass::AfterWater : ParticleRenderPass::All );
     SetRenderingStage( oldStage );
     Engine::GAPI->DrawSkeletalVN();
 
@@ -2621,16 +2648,19 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
     GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
 
-    // TODO: TODO: GodRays need the GBuffer1 from the scene, but Particles need to
-    // clear it!
+    // Early particles preserve scene normals; late particles can reuse them
+    // after god rays have finished.
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableGodRays &&
         Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
         zBSP_MODE_OUTDOOR )
         PfxRenderer->RenderGodRays();
 
     Engine::GAPI->ResetRenderStates();
+    // Preserve the original preparation order when no early pass is needed.
+    if ( !splitTransparency ) Engine::GAPI->PrepareParticles();
     // DrawParticleEffects();
-    Engine::GAPI->DrawParticlesSimple();
+    Engine::GAPI->DrawParticlesSimple( splitTransparency
+        ? ParticleRenderPass::AfterWater : ParticleRenderPass::All );
 
 #if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
     // Calc weapon/effect trail mesh data
@@ -3434,6 +3464,10 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &ricb );
     ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+
+    // The fullscreen copies bypass Gothic's texture cache. Force the first
+    // water texture to bind even if an earlier particle used the same texture.
+    Engine::GAPI->ResetRenderStates();
 
     // Bind reflection cube
     GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
@@ -6336,11 +6370,11 @@ void D3D11GraphicsEngine::EnsureTempVertexBufferSize( std::unique_ptr<D3D11Verte
 }
 
 /** Draws particle meshes */
-void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes ) {
+void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes, ParticleRenderPass pass ) {
     if ( progMeshes.empty() ) return;
     SetDefaultStates();
 
-    SetActivePixelShader( "PS_Simple" );
+    SetActivePixelShader( pass == ParticleRenderPass::BeforeWater ? "PS_SimpleWater" : "PS_Simple" );
     SetActiveVertexShader( "VS_Ex" );
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
@@ -6431,159 +6465,206 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
     }
 }
 
-/** Draws particle effects */
-void D3D11GraphicsEngine::DrawFrameParticles(
-    std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles,
-    std::map<zCTexture*, ParticleRenderInfo>& info ) {
-    if ( particles.empty() ) return;
+void D3D11GraphicsEngine::BuildFrameWaterDepth() {
+    if ( !FrameWaterDepth ) {
+        FrameWaterDepth = std::make_unique<RenderToDepthStencilBuffer>(
+            GetDevice(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+            DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+        SetDebugName( FrameWaterDepth->GetTexture().Get(), "FrameWaterDepth" );
+    }
+
     SetDefaultStates();
+    Engine::GAPI->SetViewTransformXM( Engine::GAPI->GetViewMatrixXM() );
+    // Seed with opaque depth so occluded water does not split visible transparency.
+    GetContext()->CopyResource( FrameWaterDepth->GetTexture().Get(), DepthStencilBuffer->GetTexture().Get() );
+    GetContext()->OMSetRenderTargets( 0, nullptr, FrameWaterDepth->GetDepthStencilView().Get() );
 
+    SetActiveVertexShader( "VS_ExWater" );
+    UnbindActivePS();
+    GetContext()->PSSetShader( nullptr, nullptr, 0 );
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+    float totalTime = Engine::GAPI->GetTotalTime();
+    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &totalTime, 4 );
+    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+
+    DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
+        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+    for ( const auto& textureMeshes : FrameWaterSurfaces ) {
+        for ( const WorldMeshInfo* mesh : textureMeshes.second ) {
+            DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh->Indices.size(), mesh->BaseIndexLocation );
+        }
+    }
+
+    // Unbind the DSV before using the same resource for clipping in pixel shaders.
+    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
+        DepthStencilBuffer->GetDepthStencilView().Get() );
+}
+
+/** Sorts particle instances once and uploads one stream for both water passes. */
+void D3D11GraphicsEngine::PrepareFrameParticles(
+    const ParticleInstanceMap& particles, const ParticleRenderInfoMap& info ) {
+    FrameAdditiveParticleBatches.clear();
+    FrameAlphaParticleBatches.clear();
+
+    struct SortedParticle {
+        zCTexture* Texture;
+        const ParticleRenderInfo* RenderInfo;
+        const ParticleInstanceInfo* Instance;
+        float ViewDepth;
+    };
+
+    XMMATRIX sortView = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
+    std::vector<SortedParticle> alphaParticles;
+    std::vector<ParticleInstanceInfo> packedInstances;
+    size_t instanceCount = 0;
+    for ( const auto& textureParticles : particles ) instanceCount += textureParticles.second.size();
+    alphaParticles.reserve( instanceCount );
+    packedInstances.reserve( instanceCount );
+
+    for ( const auto& textureParticles : particles ) {
+        if ( textureParticles.second.empty() ) continue;
+        zCTexture* texture = textureParticles.first.first;
+        if ( texture && texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+
+        const ParticleRenderInfo& renderInfo = info.at( textureParticles.first );
+        if ( renderInfo.BlendMode == zRND_ALPHA_FUNC_ADD ) {
+            FrameAdditiveParticleBatches.push_back( { texture, renderInfo,
+                static_cast<UINT>(packedInstances.size()), static_cast<UINT>(textureParticles.second.size()) } );
+            packedInstances.insert( packedInstances.end(), textureParticles.second.begin(), textureParticles.second.end() );
+        } else {
+            for ( const ParticleInstanceInfo& instance : textureParticles.second ) {
+                float depth = XMVectorGetZ( XMVector3TransformCoord(
+                    XMLoadFloat3( instance.position.toXMFLOAT3() ), sortView ) );
+                alphaParticles.push_back( { texture, &renderInfo, &instance, depth } );
+            }
+        }
+    }
+
+    // Sort across textures as well as within each emitter. Radial distance
+    // gives the wrong order for particles off to the side.
+    std::stable_sort( alphaParticles.begin(), alphaParticles.end(),
+        []( const SortedParticle& a, const SortedParticle& b ) { return a.ViewDepth > b.ViewDepth; } );
+
+    // Keep consecutive texture/blend runs in the global back-to-front order.
+    for ( size_t first = 0; first < alphaParticles.size(); ) {
+        const SortedParticle& particle = alphaParticles[first];
+        size_t end = first + 1;
+        while ( end < alphaParticles.size() && alphaParticles[end].Texture == particle.Texture &&
+            alphaParticles[end].RenderInfo->BlendMode == particle.RenderInfo->BlendMode ) {
+            ++end;
+        }
+        FrameAlphaParticleBatches.push_back( { particle.Texture, *particle.RenderInfo,
+            static_cast<UINT>(packedInstances.size()), static_cast<UINT>(end - first) } );
+        for ( size_t i = first; i < end; ++i ) packedInstances.push_back( *alphaParticles[i].Instance );
+        first = end;
+    }
+
+    if ( !packedInstances.empty() ) {
+        UINT size = static_cast<UINT>(sizeof( ParticleInstanceInfo ) * packedInstances.size());
+        EnsureTempVertexBufferSize( TempParticlesVertexBuffer, size );
+        if ( TempParticlesVertexBuffer->UpdateBuffer( packedInstances.data(), size ) != XR_SUCCESS ) {
+            FrameAdditiveParticleBatches.clear();
+            FrameAlphaParticleBatches.clear();
+        }
+    }
+}
+
+/** Draws prepared particles without advancing simulation or uploading again. */
+void D3D11GraphicsEngine::DrawFrameParticles( ParticleRenderPass pass ) {
+    if ( FrameAdditiveParticleBatches.empty() && FrameAlphaParticleBatches.empty() ) return;
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-    Engine::GAPI->SetViewTransformXM( view );  // Update view transform
-
-    // TODO: Maybe make particles draw at a lower res and bilinear upsample the result.
-
-    // Clear GBuffer0 to hold the refraction vectors since it's not needed anymore
-    Context->ClearRenderTargetView( GBuffer0_Diffuse->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-    Context->ClearRenderTargetView( GBuffer1_Normals->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-
-    RefractionInfoConstantBuffer ricb = {};
-    ricb.RI_Projection = Engine::GAPI->GetProjectionMatrix();
-    ricb.RI_ViewportSize = float2( Resolution.x, Resolution.y );
-    ricb.RI_Time = Engine::GAPI->GetTimeSeconds();
-    ricb.RI_CameraPosition = Engine::GAPI->GetCameraPosition();
-    ricb.RI_Far = Engine::GAPI->GetFarPlane();
-
-    SetActivePixelShader( "PS_ParticleDistortion" );
-    ActivePS->Apply();
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &ricb );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
+    SetDefaultStates();
+    Engine::GAPI->SetViewTransformXM( view );
     GothicRendererState& state = Engine::GAPI->GetRendererState();
-
     state.BlendState.SetAdditiveBlending();
     state.BlendState.SetDirty();
-
     state.DepthState.DepthWriteEnabled = false;
     state.DepthState.SetDirty();
-
     state.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     state.RasterizerState.SetDirty();
 
-    std::vector<std::tuple<zCTexture*, ParticleRenderInfo*, std::vector<ParticleInstanceInfo>*>> pvecAdd;
-    std::vector<std::tuple<zCTexture*, ParticleRenderInfo*, std::vector<ParticleInstanceInfo>*>> pvecRest;
-    for ( auto&& textureParticle : particles ) {
-        if ( textureParticle.second.empty() ) continue;
+    const bool beforeWater = pass == ParticleRenderPass::BeforeWater;
+    RenderToTextureBuffer* distortion = GBuffer1_Normals.get();
+    if ( !FrameAdditiveParticleBatches.empty() ) {
+        if ( beforeWater ) {
+            if ( !EarlyParticleDistortion ) {
+                EarlyParticleDistortion = std::make_unique<RenderToTextureBuffer>(
+                    GetDevice(), Resolution.x, Resolution.y, DXGI_FORMAT_R8G8B8A8_SNORM );
+                SetDebugName( EarlyParticleDistortion->GetTexture().Get(), "EarlyParticleDistortion" );
+            }
+            distortion = EarlyParticleDistortion.get();
+        }
 
-        ParticleRenderInfo* ri = &info[textureParticle.first];
-        if ( ri->BlendMode == zRND_ALPHA_FUNC_ADD )
-            pvecAdd.push_back( std::make_tuple( textureParticle.first, ri, &textureParticle.second ) );
-        else
-            pvecRest.push_back( std::make_tuple( textureParticle.first, ri, &textureParticle.second ) );
+        // Diffuse is no longer needed after lighting. Preserve scene normals
+        // in the early pass, because god rays still consume them later.
+        const float clearColor[4] = {};
+        Context->ClearRenderTargetView( GBuffer0_Diffuse->GetRenderTargetView().Get(), clearColor );
+        Context->ClearRenderTargetView( distortion->GetRenderTargetView().Get(), clearColor );
+
+        RefractionInfoConstantBuffer ricb = {};
+        ricb.RI_Projection = Engine::GAPI->GetProjectionMatrix();
+        ricb.RI_ViewportSize = float2( Resolution.x, Resolution.y );
+        ricb.RI_Time = Engine::GAPI->GetTimeSeconds();
+        ricb.RI_CameraPosition = Engine::GAPI->GetCameraPosition();
+        ricb.RI_Far = Engine::GAPI->GetFarPlane();
+        SetActivePixelShader( beforeWater ? "PS_ParticleDistortionWater" : "PS_ParticleDistortion" );
+        ActivePS->Apply();
+        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &ricb );
+        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+
+        ID3D11RenderTargetView* rtvs[] = {
+            GBuffer0_Diffuse->GetRenderTargetView().Get(), distortion->GetRenderTargetView().Get() };
+        Context->OMSetRenderTargets( 2, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
     }
 
-    ID3D11RenderTargetView* rtv[] = {
-        GBuffer0_Diffuse->GetRenderTargetView().Get(),
-        GBuffer1_Normals->GetRenderTargetView().Get() };
-    Context->OMSetRenderTargets( 2, rtv, DepthStencilBuffer->GetDepthStencilView().Get() );
-
-    // Bind view/proj
-    SetupVS_ExConstantBuffer();
-
-    // Setup GS
     SetActiveVertexShader( "VS_ParticlePoint" );
+    SetupVS_ExConstantBuffer();
     ActiveVS->Apply();
-
     ParticleGSInfoConstantBuffer gcb = {};
     gcb.CameraPosition = Engine::GAPI->GetCameraPosition();
     ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &gcb );
     ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 2 );
-
-    // Rendering points only
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     UpdateRenderStates();
 
-    for ( auto const& textureParticleRenderInfo : pvecAdd ) {
-        zCTexture* tx = std::get<0>( textureParticleRenderInfo );
-        ParticleRenderInfo& partInfo = *std::get<1>( textureParticleRenderInfo );
-        std::vector<ParticleInstanceInfo>& instances = *std::get<2>( textureParticleRenderInfo );
-
-        if ( instances.empty() ) continue;
-
-        if ( tx ) {
-            // Bind it
-            if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN )
-                tx->Bind( 0 );
-            else
-                continue;
-        }
-
-        // Push data for the particles to the GPU
-        EnsureTempVertexBufferSize( TempParticlesVertexBuffer, sizeof( ParticleInstanceInfo ) * instances.size() );
-        TempParticlesVertexBuffer->UpdateBuffer( &instances[0], sizeof( ParticleInstanceInfo ) * instances.size() );
-        DrawVertexBufferInstanced( TempParticlesVertexBuffer.get(), 4, instances.size(), sizeof( ParticleInstanceInfo ) );
+    for ( const FrameParticleBatch& batch : FrameAdditiveParticleBatches ) {
+        if ( batch.Texture ) batch.Texture->Bind( 0 );
+        DrawVertexBufferInstanced( TempParticlesVertexBuffer.get(), 4,
+            batch.NumInstances, sizeof( ParticleInstanceInfo ), batch.FirstInstance );
     }
 
-    // Set usual rendering for everything else. Alphablending mostly.
-    SetActivePixelShader( "PS_Simple" );
-    PS_Simple->Apply();
-
+    SetActivePixelShader( beforeWater ? "PS_SimpleWater" : "PS_Simple" );
+    ActivePS->Apply();
     Context->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
     int lastBlendMode = -1;
-    for ( auto const& textureParticleRenderInfo : pvecRest ) {
-        zCTexture* tx = std::get<0>( textureParticleRenderInfo );
-        ParticleRenderInfo& partInfo = *std::get<1>( textureParticleRenderInfo );
-        std::vector<ParticleInstanceInfo>& instances = *std::get<2>( textureParticleRenderInfo );
-
-        if ( instances.empty() ) continue;
-
-        if ( tx ) {
-            // Bind it
-            if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN )
-                tx->Bind( 0 );
-            else
-                continue;
-        }
-
-        GothicBlendStateInfo& blendState = partInfo.BlendState;
-
-        // This only happens once or twice, since the input list is sorted
-        if ( partInfo.BlendMode != lastBlendMode ) {
-            // Setup blend state
-            state.BlendState = blendState;
+    for ( const FrameParticleBatch& batch : FrameAlphaParticleBatches ) {
+        if ( batch.Texture ) batch.Texture->Bind( 0 );
+        if ( batch.RenderInfo.BlendMode != lastBlendMode ) {
+            state.BlendState = batch.RenderInfo.BlendState;
             state.BlendState.SetDirty();
-
-            lastBlendMode = partInfo.BlendMode;
+            lastBlendMode = batch.RenderInfo.BlendMode;
             UpdateRenderStates();
         }
-
-        // Push data for the particles to the GPU
-        EnsureTempVertexBufferSize( TempParticlesVertexBuffer, sizeof( ParticleInstanceInfo ) * instances.size() );
-        TempParticlesVertexBuffer->UpdateBuffer( &instances[0], sizeof( ParticleInstanceInfo ) * instances.size() );
-        DrawVertexBufferInstanced( TempParticlesVertexBuffer.get(), 4, instances.size(), sizeof( ParticleInstanceInfo ) );
+        DrawVertexBufferInstanced( TempParticlesVertexBuffer.get(), 4,
+            batch.NumInstances, sizeof( ParticleInstanceInfo ), batch.FirstInstance );
     }
 
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     state.BlendState.SetDefault();
     state.BlendState.SetDirty();
-
-    GBuffer0_Diffuse->BindToPixelShader( Context.Get(), 1 );
-    GBuffer1_Normals->BindToPixelShader( Context.Get(), 2 );
-
-    // Copy scene behind the particle systems
-    PfxRenderer->CopyTextureToRTV(
-        HDRBackBuffer->GetShaderResView(),
-        PfxRenderer->GetTempBuffer().GetRenderTargetView() );
-
-    SetActivePixelShader( "PS_PFX_ApplyParticleDistortion" );
-    ActivePS->Apply();
-
-    // Copy it back, putting distortion behind it
-    PfxRenderer->CopyTextureToRTV(
-        PfxRenderer->GetTempBuffer().GetShaderResView(),
-        HDRBackBuffer->GetRenderTargetView(), INT2( 0, 0 ), true );
+    if ( !FrameAdditiveParticleBatches.empty() ) {
+        GBuffer0_Diffuse->BindToPixelShader( Context.Get(), 1 );
+        distortion->BindToPixelShader( Context.Get(), 2 );
+        PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(),
+            PfxRenderer->GetTempBuffer().GetRenderTargetView() );
+        SetActivePixelShader( "PS_PFX_ApplyParticleDistortion" );
+        ActivePS->Apply();
+        PfxRenderer->CopyTextureToRTV( PfxRenderer->GetTempBuffer().GetShaderResView(),
+            HDRBackBuffer->GetRenderTargetView(), INT2( 0, 0 ), true );
+    }
 }
 
 /** Called when a vob was removed from the world */

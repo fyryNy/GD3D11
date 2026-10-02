@@ -206,10 +206,13 @@ public:
     virtual void OnUIEvent( EUIEvent uiEvent ) {}
 
     /** Draws particle meshes */
-    virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes ) {}
+    virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes, ParticleRenderPass pass ) {}
+
+    /** Prepares the particle batches once for all passes in the current frame */
+    virtual void PrepareFrameParticles( const ParticleInstanceMap& particles, const ParticleRenderInfoMap& info ) {}
 
     /** Draws particle effects */
-    virtual void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info ) {}
+    virtual void DrawFrameParticles( ParticleRenderPass pass ) {}
 
     virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {};
 

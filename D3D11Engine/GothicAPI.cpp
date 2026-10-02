@@ -962,8 +962,6 @@ void GothicAPI::DrawWorldMeshNaive() {
 #endif
 //#endif
 
-    FrameParticleInfo.clear();
-    FrameParticles.clear();
     FrameMeshInstances.clear();
 
     START_TIMING();
@@ -1038,8 +1036,10 @@ void GothicAPI::DrawWorldMeshNaive() {
     ResetWorldTransform();
 }
 
-/** Draws particles, in a simple way */
-void GothicAPI::DrawParticlesSimple() {
+/** Updates visible particle effects and prepares their instances once per frame */
+void GothicAPI::PrepareParticles() {
+    FrameParticleInfo.clear();
+    FrameParticles.clear();
     ParticleFrameData data;
 
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
@@ -1047,16 +1047,22 @@ void GothicAPI::DrawParticlesSimple() {
         zCCamera::GetCamera()->Activate();
         GetVisibleParticleEffectsList( renderedParticleFXs );
 
-        // now it is save to render
+        // Simulate each visible effect once and collect its render instances.
         for ( auto const& it : renderedParticleFXs ) {
             const zCVisual* vis = it->GetVisual();
             if ( vis ) {
                 DrawParticleFX( it, reinterpret_cast<zCParticleFX*>(const_cast<zCVisual*>(vis)), data );
             }
         }
+    }
+    Engine::GraphicsEngine->PrepareFrameParticles( FrameParticles, FrameParticleInfo );
+}
 
-        Engine::GraphicsEngine->DrawFrameParticleMeshes( ParticleEffectProgMeshes );
-        Engine::GraphicsEngine->DrawFrameParticles( FrameParticles, FrameParticleInfo );
+/** Draws the particle instances prepared for the current frame */
+void GothicAPI::DrawParticlesSimple( ParticleRenderPass pass ) {
+    if ( RendererState.RendererSettings.DrawParticleEffects ) {
+        Engine::GraphicsEngine->DrawFrameParticleMeshes( ParticleEffectProgMeshes, pass );
+        Engine::GraphicsEngine->DrawFrameParticles( pass );
     }
 }
 
@@ -2529,30 +2535,53 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
 
-void GothicAPI::DrawTransparencyVobs() {
+void GothicAPI::DrawTransparencyVobs( ParticleRenderPass pass ) {
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    if ( !TransparencyVobs.empty() ) {
-        // Setup alpha blending
-        RendererState.RasterizerState.SetDefault();
-        RendererState.RasterizerState.SetDirty();
-        RendererState.BlendState.SetAlphaBlending();
-        RendererState.BlendState.SetDirty();
-        RendererState.DepthState.SetDefault();
-        RendererState.DepthState.SetDirty();
-    }
+    if ( TransparencyVobs.empty() ) return;
 
-    while ( !TransparencyVobs.empty() ) {
-        auto const& TransVobInfo = TransparencyVobs.front();
+    RendererState.RasterizerState.SetDefault();
+    RendererState.RasterizerState.SetDirty();
+    RendererState.BlendState.SetAlphaBlending();
+    RendererState.BlendState.SetDirty();
+    RendererState.DepthState.SetDefault();
+    RendererState.DepthState.SetDirty();
+
+    const bool beforeWater = pass == ParticleRenderPass::BeforeWater;
+    const int drawnVobsBeforePass = RendererState.RendererInfo.FrameDrawnVobs;
+    const char* colorShader = beforeWater ? "PS_TransparencyWater" : "PS_Transparency";
+
+    // Keep the original heap for the pass after water. The shaders clip each
+    // fragment against visible water depth, including vobs crossing its surface.
+    std::vector<TransparencyVobInfo> waterVobs;
+    if ( beforeWater ) waterVobs = TransparencyVobs;
+    auto& vobs = beforeWater ? waterVobs : TransparencyVobs;
+
+    auto bindDepthShader = [&]() {
+        if ( beforeWater ) {
+            g->SetActivePixelShader( "PS_TransparencyDepthWater" );
+            g->BindActivePixelShader();
+        } else {
+            g->UnbindActivePS();
+            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        }
+    };
+
+    while ( !vobs.empty() ) {
+        const TransparencyVobInfo TransVobInfo = vobs.front();
+        std::pop_heap( vobs.begin(), vobs.end(), CompareGhostDistance );
+        vobs.pop_back();
 
         if ( TransVobInfo.skeletalVob ) {
             // We need to do Z-prepass first
-            g->UnbindActivePS();
-            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
-            DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance );
+            bindDepthShader();
+            // Attachments and texture animations were already updated in the
+            // first pass when this frame contains water.
+            DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance,
+                pass != ParticleRenderPass::AfterWater );
             RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
             // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( "PS_Transparency" );
+            g->SetActivePixelShader( colorShader );
             g->BindActivePixelShader();
 
             // Update transparency alpha information
@@ -2563,13 +2592,11 @@ void GothicAPI::DrawTransparencyVobs() {
             g->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
+            bindDepthShader();
             g->SetActiveVertexShader( "VS_Ex" );
             g->SetupVS_ExMeshDrawCall();
+            g->SetupVS_ExConstantBuffer();
             TransVobInfo.normalVob->VobConstantBuffer->BindToVertexShader( 1 );
-
-            // We need to do Z-prepass first
-            g->UnbindActivePS();
-            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {
@@ -2585,10 +2612,8 @@ void GothicAPI::DrawTransparencyVobs() {
                         meshInfo->Indices.size() );
                 }
             }
-            RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
-
             // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( "PS_Transparency" );
+            g->SetActivePixelShader( colorShader );
             g->BindActivePixelShader();
 
             // Update transparency alpha information
@@ -2613,10 +2638,9 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
             }
         }
-
-        std::pop_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
-        TransparencyVobs.pop_back();
     }
+    // Count each ghost once in the pass that consumes the frame's vob heap.
+    if ( beforeWater ) RendererState.RendererInfo.FrameDrawnVobs = drawnVobsBeforePass;
 }
 
 void GothicAPI::DrawSkeletalVN() {
@@ -2704,27 +2728,30 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             }
         }
 
-        // Set render states for this type
-        ParticleRenderInfo& inf = FrameParticleInfo[texture];
+        // Effects sharing a texture can still require different blend modes.
+        int blendMode = fx->GetEmitter()->GetVisAlphaFunc();
+        if ( blendMode != zRND_ALPHA_FUNC_ADD && blendMode != zRND_ALPHA_FUNC_MUL ) {
+            blendMode = zRND_ALPHA_FUNC_BLEND;
+        }
+        const ParticleBatchKey batchKey( texture, blendMode );
+        ParticleRenderInfo& inf = FrameParticleInfo[batchKey];
+        inf.BlendMode = blendMode;
 
-        switch ( fx->GetEmitter()->GetVisAlphaFunc() ) {
+        switch ( blendMode ) {
         case zRND_ALPHA_FUNC_ADD:
             inf.BlendState.SetAdditiveBlending();
-            inf.BlendMode = zRND_ALPHA_FUNC_ADD;
             break;
 
         case zRND_ALPHA_FUNC_MUL:
             inf.BlendState.SetModulateBlending();
-            inf.BlendMode = zRND_ALPHA_FUNC_MUL;
             break;
 
         default:
             inf.BlendState.SetAlphaBlending();
-            inf.BlendMode = zRND_ALPHA_FUNC_BLEND;
             break;
         }
 
-        std::vector<ParticleInstanceInfo>& part = FrameParticles[texture];
+        std::vector<ParticleInstanceInfo>& part = FrameParticles[batchKey];
 
         // Check for kill
         zTParticle* kill = nullptr;
@@ -5011,7 +5038,7 @@ void GothicAPI::SetIntParamFromConfig( const std::string& param, int value ) {
 }
 
 /** Returns the frame particle info collected from all DrawParticleFX-Calls */
-std::map<zCTexture*, ParticleRenderInfo>& GothicAPI::GetFrameParticleInfo() {
+ParticleRenderInfoMap& GothicAPI::GetFrameParticleInfo() {
     return FrameParticleInfo;
 }
 

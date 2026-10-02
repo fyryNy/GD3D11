@@ -5,6 +5,10 @@
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
 //--------------------------------------------------------------------------------------
+#ifdef WATER_CLIP
+#include "WaterTransparency.hlsli"
+#endif
+
 SamplerState SS_Linear : register( s0 );
 Texture2D	TX_Texture0 : register( t0 );
 
@@ -26,10 +30,13 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
+#ifdef WATER_CLIP
+	ClipBehindWater( Input.vPosition );
+#endif
+
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	color *= Input.vDiffuse;
 	//return float4(1,0,0,1);
 	
 	return color;
 }
-
