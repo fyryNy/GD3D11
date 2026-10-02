@@ -1,6 +1,7 @@
 #include <Windows.h>
 #include <string>
 #include <sstream>
+#include <cmath>
 #include "pch.h"
 #include "GothicAPI.h"
 #include "Engine.h"
@@ -4553,6 +4554,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "DisplayFlip", std::to_string( s.DisplayFlip ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "LowLatency", std::to_string( s.LowLatency ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HDR_Monitor", std::to_string( s.HDR_Monitor ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDRPaperWhiteNits", std::to_string( s.HDRPaperWhiteNits ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDRPeakNits", std::to_string( s.HDRPeakNits ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Display", "StretchWindow", std::to_string( s.StretchWindow ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "UIScale", std::to_string( s.GothicUIScale ).c_str(), ini.c_str() );
@@ -4672,6 +4675,12 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DisplayFlip = GetPrivateProfileBoolA( "Display", "DisplayFlip", false, ini );
         s.LowLatency = GetPrivateProfileBoolA( "Display", "LowLatency", false, ini );
         s.HDR_Monitor = GetPrivateProfileBoolA( "Display", "HDR_Monitor", false, ini );
+        s.HDRPaperWhiteNits = GetPrivateProfileFloatA( "Display", "HDRPaperWhiteNits", defaultRendererSettings.HDRPaperWhiteNits, ini );
+        if ( !std::isfinite( s.HDRPaperWhiteNits ) ) s.HDRPaperWhiteNits = defaultRendererSettings.HDRPaperWhiteNits;
+        s.HDRPaperWhiteNits = std::clamp( s.HDRPaperWhiteNits, 80.0f, 500.0f );
+        s.HDRPeakNits = GetPrivateProfileFloatA( "Display", "HDRPeakNits", defaultRendererSettings.HDRPeakNits, ini );
+        if ( !std::isfinite( s.HDRPeakNits ) ) s.HDRPeakNits = defaultRendererSettings.HDRPeakNits;
+        s.HDRPeakNits = std::clamp( s.HDRPeakNits, 0.0f, 10000.0f );
         s.StretchWindow = GetPrivateProfileBoolA( "Display", "StretchWindow", false, ini );
         s.GothicUIScale = GetPrivateProfileFloatA( "Display", "UIScale", 1.0f, ini );
         s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", true, ini );

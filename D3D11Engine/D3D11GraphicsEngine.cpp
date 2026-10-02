@@ -34,6 +34,7 @@
 #include <SpriteBatch.h>
 #include <locale>
 #include <codecvt>
+#include <cmath>
 #include <wrl\client.h>
 #include "D3D11_Helpers.h"
 
@@ -108,7 +109,11 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     m_FrameLimiter = std::make_unique<FpsLimiter>();
     m_LastFrameLimit = 0;
     m_flipWithTearing = false;
+    m_swapchainflip = false;
     m_HDR = false;
+    m_HDRSwapChain = false;
+    m_HDRDisplayPeakNits = 1000.0f;
+    m_HDRLastOutputCheck = 0;
     m_lowlatency = false;
     m_isWindowActive = false;
 
@@ -848,27 +853,38 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 #endif
 
     // Release all referenced buffer resources before we can resize the swapchain. Needed!
+    GetContext()->OMSetRenderTargets( 0, nullptr, nullptr );
     BackbufferRTV.Reset();
     DepthStencilBuffer.reset();
     FrameWaterDepth.reset();
     EarlyParticleDistortion.reset();
 
     if ( UIView ) UIView->PrepareResize();
+    HDRUIBlack.reset();
+    HDRUIWhite.reset();
+    HDRD2DUI.reset();
 
     UINT scflags = m_flipWithTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+    if ( m_lowlatency ) scflags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     if ( frameLatencyWaitableObject ) {
         CloseHandle( frameLatencyWaitableObject );
         frameLatencyWaitableObject = nullptr;
     }
 
     if ( !SwapChain.Get() ) {
-        static std::map<DXGI_SWAP_EFFECT, std::string> swapEffectMap = {
+        const std::map<DXGI_SWAP_EFFECT, std::string> swapEffectMap = {
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD, "DXGI_SWAP_EFFECT_DISCARD"},
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, "DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL"},
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD, "DXGI_SWAP_EFFECT_FLIP_DISCARD"},
         };
 
         m_swapchainflip = Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip;
+        Microsoft::WRL::ComPtr<IDXGIFactory4> hdrFactory;
+        // Native HDR requires Windows 10 flip presentation. Older systems keep
+        // their existing SDR path, including Windows 7's discard swapchain.
+        m_HDRSwapChain = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor
+            && SUCCEEDED( DXGIFactory2.As( &hdrFactory ) );
+        if ( m_HDRSwapChain ) m_swapchainflip = true;
         if ( m_swapchainflip ) {
             LONG lStyle = GetWindowLongA( OutputWindow, GWL_STYLE );
             lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
@@ -899,12 +915,11 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
 
         LogInfo() << "SwapChain Mode: " << swapEffectMap.at( swapEffect );
-        swapEffectMap.clear();
         if ( m_swapchainflip ) {
             LogInfo() << "SwapChain: DXGI_FEATURE_PRESENT_ALLOW_TEARING = " << (m_flipWithTearing ? "Enabled" : "Disabled");
         }
 
-        LogInfo() << "Creating new swapchain! (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
+        LogInfo() << "Creating new swapchain: " << (m_HDRSwapChain ? "FP16 scRGB" : "BGRA8 SDR");
 
         if ( m_swapchainflip ) {
             scd.BufferCount = 2;
@@ -926,7 +941,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         scd.SwapEffect = swapEffect;
         scd.Flags = scflags;
-        scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        scd.Format = m_HDRSwapChain ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
         scd.SampleDesc.Count = 1;
         scd.SampleDesc.Quality = 0;
@@ -934,6 +949,13 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         scd.Width = bbres.x;
 
         hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
+        if ( FAILED( hr ) && m_HDRSwapChain ) {
+            LogWarn() << "FP16 HDR swapchain unavailable; falling back to SDR.";
+            m_HDRSwapChain = false;
+            scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            SwapChain.Reset();
+            hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
+        }
         if ( FAILED( hr ) ) {
             LogError() << "Failed to create Swapchain! Program will now exit!";
             exit( 0 );
@@ -963,14 +985,10 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         // Need to init AntTweakBar now that we have a working swapchain
         XLE( Engine::AntTweakBar->Init() );
 
-        wrl::ComPtr<IDXGISwapChain2> swapChain2;
-        if ( m_lowlatency && SUCCEEDED( SwapChain.As( &swapChain2 ) ) ) {
-            frameLatencyWaitableObject = swapChain2->GetFrameLatencyWaitableObject();
-            WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
-        }
     } else {
-        LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
-        if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
+        LogInfo() << "Resizing swapchain: " << (m_HDRSwapChain ? "FP16 scRGB" : "BGRA8 SDR");
+        if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y,
+            m_HDRSwapChain ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
             LogError() << "Failed to resize swapchain!";
             return XR_FAILED;
         }
@@ -978,14 +996,65 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     // Successfully resized swapchain, re-get buffers
     wrl::ComPtr<ID3D11Texture2D> backbuffer;
-    m_HDR = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor;
+    // Verify the actual output format and color-space pairing, independently of
+    // the floating-point texture used internally to render the world.
+    if ( m_HDRSwapChain ) {
+        wrl::ComPtr<IDXGISwapChain3> swapChain3;
+        UINT support = 0;
+        if ( FAILED( SwapChain.As( &swapChain3 ) )
+            || FAILED( swapChain3->CheckColorSpaceSupport( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709, &support ) )
+            || !(support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)
+            || FAILED( swapChain3->SetColorSpace1( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 ) ) ) {
+            LogWarn() << "scRGB presentation unavailable; falling back to SDR.";
+            m_HDRSwapChain = false;
+            if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) )
+                return XR_FAILED;
+        }
+    }
     UpdateColorSpace_SwapChain();
     SwapChain->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
 
     // Recreate RenderTargetView
     LE( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) );
 
-    if ( UIView ) UIView->Resize( Resolution, backbuffer.Get() );
+    if ( m_HDRSwapChain ) {
+        HDRUIBlack = std::make_unique<RenderToTextureBuffer>( GetDevice(), bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+        HDRUIWhite = std::make_unique<RenderToTextureBuffer>( GetDevice(), bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+        HDRD2DUI = std::make_unique<RenderToTextureBuffer>( GetDevice(), bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+        for ( auto* ui : { HDRUIBlack.get(), HDRUIWhite.get(), HDRD2DUI.get() } ) {
+            if ( !ui->GetTexture() || !ui->GetRenderTargetView() || !ui->GetShaderResView() ) {
+                LogWarn() << "HDR menu surfaces unavailable; falling back to SDR.";
+                m_HDRSwapChain = false;
+                m_HDR = false;
+                break;
+            }
+        }
+        if ( !m_HDRSwapChain ) {
+            HDRUIBlack.reset();
+            HDRUIWhite.reset();
+            HDRD2DUI.reset();
+            BackbufferRTV.Reset();
+            backbuffer.Reset();
+            hr = SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags );
+            if ( SUCCEEDED( hr ) ) hr = SwapChain->GetBuffer( 0, IID_PPV_ARGS( backbuffer.GetAddressOf() ) );
+            if ( SUCCEEDED( hr ) ) hr = GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() );
+            if ( FAILED( hr ) ) {
+                LogError() << "Failed to recover the SDR swapchain after HDR surface allocation failure.";
+                exit( 0 );
+            }
+            UpdateColorSpace_SwapChain();
+        }
+    }
+    if ( UIView && XR_SUCCESS != UIView->Resize( Resolution, m_HDRSwapChain ? HDRD2DUI->GetTexture().Get() : backbuffer.Get() ) ) {
+        LogWarn() << "Could not resize the renderer menu surface.";
+        // A menu button can invoke OnResize. Keep its callback object alive;
+        // retry creating the view at the next frame boundary instead.
+    }
+    wrl::ComPtr<IDXGISwapChain2> swapChain2;
+    if ( m_lowlatency && SUCCEEDED( SwapChain.As( &swapChain2 ) ) ) {
+        frameLatencyWaitableObject = swapChain2->GetFrameLatencyWaitableObject();
+        if ( frameLatencyWaitableObject ) WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
+    }
 
     // Recreate DepthStencilBuffer
     DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
@@ -1045,6 +1114,10 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
+    // Refresh after Windows HDR changes, hotplug, or moving to another monitor.
+    const DWORD outputCheckTime = GetTickCount();
+    if ( m_HDRSwapChain && outputCheckTime - m_HDRLastOutputCheck >= 1000 )
+        UpdateColorSpace_SwapChain();
 
 #ifdef BUILD_SPACER_NET
     Engine::GAPI->GetRendererState().RendererSettings.EnableInactiveFpsLock = false;
@@ -1128,6 +1201,12 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     Engine::GAPI->SetFrameProcessedTexturesReady();
     Engine::GAPI->LeaveResourceCriticalSection();
+
+    // A failed menu resize may occur inside that menu's own callback.
+    if ( UIView && !UIView->GetRenderTarget() ) {
+        UIView.reset();
+        Engine::GAPI->SetEnableGothicInput( !Engine::AntTweakBar->GetActive() );
+    }
 
     // Check for editorpanel
     if ( !UIView ) {
@@ -1381,37 +1460,73 @@ XRESULT D3D11GraphicsEngine::Present() {
     vp.Height = static_cast<float>(GetBackbufferResolution().y);
 
     GetContext()->RSSetViewports( 1, &vp );
-    // Copy HDR scene to backbuffer
+    if ( m_HDRSwapChain ) {
+        ID3D11ShaderResourceView* emptyViews[4] = {};
+        GetContext()->PSSetShaderResources( 0, 4, emptyViews );
+        const float black[4] = { 0, 0, 0, 0 };
+        const float white[4] = { 1, 1, 1, 1 };
+        GetContext()->ClearRenderTargetView( HDRUIBlack->GetRenderTargetView().Get(), black );
+        GetContext()->ClearRenderTargetView( HDRUIWhite->GetRenderTargetView().Get(), white );
+        GetContext()->ClearRenderTargetView( HDRD2DUI->GetRenderTargetView().Get(), black );
 
-    SetDefaultStates();
-
-    SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
-
-    ActivePS->Apply();
-
-    GammaCorrectConstantBuffer gcb;
-    gcb.G_Gamma = Engine::GAPI->GetGammaValue();
-    gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
-    gcb.G_TextureSize = GetResolution();
-    gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
-    PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, INT2( 0, 0 ), true );
-
-    // GetContext()->ClearState();
-
-    GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
-
-    SetDefaultStates();
-    UpdateRenderStates();
-    Engine::AntTweakBar->Draw();
-
-    if ( UIView ) {
+        if ( Engine::AntTweakBar->GetActive() ) {
+            // The bundled Ant backend uses SRC_ALPHA for its alpha channel.
+            // Two RGB renders recover true coverage without depending on it.
+            GetContext()->OMSetRenderTargets( 1, HDRUIBlack->GetRenderTargetView().GetAddressOf(), nullptr );
+            SetDefaultStates( true );
+            Engine::AntTweakBar->Draw();
+            GetContext()->OMSetRenderTargets( 1, HDRUIWhite->GetRenderTargetView().GetAddressOf(), nullptr );
+            SetDefaultStates( true );
+            Engine::AntTweakBar->Draw();
+        }
+        GetContext()->OMSetRenderTargets( 0, nullptr, nullptr );
+        if ( UIView && UIView->GetRenderTarget() ) {
+            SetDefaultStates( true );
+            UIView->Render( Engine::GAPI->GetFrameTimeSec() );
+        }
+        GetContext()->RSSetViewports( 1, &vp );
+        SetDefaultStates( true );
+        GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
+        SetActivePixelShader( "PS_PFX_HDRPresent" );
+        ActivePS->Apply();
+        GammaCorrectConstantBuffer gcb = {};
+        gcb.G_Gamma = Engine::GAPI->GetGammaValue();
+        gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
+        gcb.G_TextureSize = GetResolution();
+        gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
+        gcb.G_HDROutput = m_HDR ? 1.0f : 0.0f;
+        gcb.G_HDRPaperWhiteNits = m_HDR ? GetHDRPaperWhiteNits() : 80.0f;
+        gcb.G_HDRPeakNits = m_HDR ? GetHDRPeakNits() : 80.0f;
+        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
+        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+        // Bind the destination before exposing menu textures as shader inputs.
+        GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
+        HDRUIBlack->BindToPixelShader( GetContext(), 1 );
+        HDRUIWhite->BindToPixelShader( GetContext(), 2 );
+        HDRD2DUI->BindToPixelShader( GetContext(), 3 );
+        PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, INT2( 0, 0 ), true );
+        GetContext()->PSSetShaderResources( 0, 4, emptyViews );
+    } else {
+        SetDefaultStates();
+        SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
+        ActivePS->Apply();
+        GammaCorrectConstantBuffer gcb = {};
+        gcb.G_Gamma = Engine::GAPI->GetGammaValue();
+        gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
+        gcb.G_TextureSize = GetResolution();
+        gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
+        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
+        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+        PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, INT2( 0, 0 ), true );
+        GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
         SetDefaultStates();
         UpdateRenderStates();
-        UIView->Render( Engine::GAPI->GetFrameTimeSec() );
+        Engine::AntTweakBar->Draw();
+        if ( UIView && UIView->GetRenderTarget() ) {
+            SetDefaultStates();
+            UpdateRenderStates();
+            UIView->Render( Engine::GAPI->GetFrameTimeSec() );
+        }
     }
 
     // Don't allow presenting from different thread than mainthread
@@ -2545,7 +2660,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         0, 0, 0 ).toPtr() );
 
     // Update editor
-    if ( UIView ) {
+    if ( UIView && UIView->GetRenderTarget() ) {
         UIView->Update( Engine::GAPI->GetFrameTimeSec() );
     }
 
@@ -2675,7 +2790,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     LineRenderer->Flush();
     LineRenderer->FlushScreenSpace();
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.EnableHDR )
+    if ( m_HDR || Engine::GAPI->GetRendererState().RendererSettings.EnableHDR )
         PfxRenderer->RenderHDR();
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableSMAA ) {
@@ -2779,53 +2894,74 @@ bool SectionRenderlistSortCmp( std::pair<float, WorldMeshSectionInfo*>& a,
     return a.first < b.first;
 }
 
-// Sets the color space for the swap chain in order to handle HDR output.
-void D3D11GraphicsEngine::UpdateColorSpace_SwapChain()
-{
-    Microsoft::WRL::ComPtr<IDXGISwapChain3> SwapChain3;
-    if ( FAILED( SwapChain.As( &SwapChain3 ) ) ) {
-        return;
-    }
+// The scene texture format is deliberately independent of the display format.
+float D3D11GraphicsEngine::GetHDRPeakNits() const {
+    const float requested = Engine::GAPI->GetRendererState().RendererSettings.HDRPeakNits;
+    const float peak = std::isfinite( requested ) && requested > 0.0f ? requested : m_HDRDisplayPeakNits;
+    return std::clamp( peak, 80.0f, 10000.0f );
+}
 
-    bool isDisplayHDR10 = false;
-    DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-    if ( m_HDR ) {
-        Microsoft::WRL::ComPtr<IDXGIOutput> output;
-        if ( SUCCEEDED( SwapChain3->GetContainingOutput( output.GetAddressOf() ) ) ) {
-            Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
-            if ( SUCCEEDED( output.As( &output6 ) ) ) {
-                DXGI_OUTPUT_DESC1 desc;
-                output6->GetDesc1( &desc );
-                if ( desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
-                    // Display output is HDR10.
-                    isDisplayHDR10 = true;
+float D3D11GraphicsEngine::GetHDRPaperWhiteNits() const {
+    const float requested = Engine::GAPI->GetRendererState().RendererSettings.HDRPaperWhiteNits;
+    const float white = std::isfinite( requested ) ? std::clamp( requested, 80.0f, 500.0f ) : 203.0f;
+    return std::min( white, GetHDRPeakNits() );
+}
+
+void D3D11GraphicsEngine::UpdateColorSpace_SwapChain() {
+    m_HDRLastOutputCheck = GetTickCount();
+    const bool wasHDR = m_HDR;
+    m_HDR = false;
+    wrl::ComPtr<IDXGISwapChain3> swapChain3;
+    if ( FAILED( SwapChain.As( &swapChain3 ) ) ) return;
+
+    const DXGI_COLOR_SPACE_TYPE colorSpace = m_HDRSwapChain
+        ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    UINT support = 0;
+    const bool validColorSpace = SUCCEEDED( swapChain3->CheckColorSpaceSupport( colorSpace, &support ) )
+        && (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)
+        && SUCCEEDED( swapChain3->SetColorSpace1( colorSpace ) );
+
+    if ( m_HDRSwapChain && validColorSpace && Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor ) {
+        // A fresh factory is required after desktop display-mode changes. The
+        // window's monitor may also belong to a different adapter from Device.
+        if ( !m_HDROutputFactory || !m_HDROutputFactory->IsCurrent() ) {
+            m_HDROutputFactory.Reset();
+            // Use the same dynamically loaded DXGI backend as Init (including
+            // DXVK), without adding a new static DXGI import to the renderer.
+            typedef HRESULT( WINAPI* CreateFactoryFunc )(REFIID, void**);
+            const HMODULE dxgiModule = GetModuleHandleA( "dxgi.dll" );
+            const auto createFactory = dxgiModule
+                ? reinterpret_cast<CreateFactoryFunc>( GetProcAddress( dxgiModule, "CreateDXGIFactory1" ) ) : nullptr;
+            if ( createFactory ) createFactory( IID_PPV_ARGS( m_HDROutputFactory.GetAddressOf() ) );
+        }
+        const HMONITOR monitor = MonitorFromWindow( OutputWindow, MONITOR_DEFAULTTONEAREST );
+        bool foundMonitor = false;
+        if ( m_HDROutputFactory ) {
+            for ( UINT ai = 0; !foundMonitor; ++ai ) {
+                wrl::ComPtr<IDXGIAdapter1> adapter;
+                if ( FAILED( m_HDROutputFactory->EnumAdapters1( ai, adapter.GetAddressOf() ) ) ) break;
+                for ( UINT oi = 0; ; ++oi ) {
+                    wrl::ComPtr<IDXGIOutput> output;
+                    if ( FAILED( adapter->EnumOutputs( oi, output.GetAddressOf() ) ) ) break;
+                    DXGI_OUTPUT_DESC outputDesc = {};
+                    if ( FAILED( output->GetDesc( &outputDesc ) ) || outputDesc.Monitor != monitor ) continue;
+                    foundMonitor = true;
+                    wrl::ComPtr<IDXGIOutput6> output6;
+                    DXGI_OUTPUT_DESC1 desc = {};
+                    if ( SUCCEEDED( output.As( &output6 ) ) && SUCCEEDED( output6->GetDesc1( &desc ) )
+                        && desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
+                        m_HDR = true;
+                        m_HDRDisplayPeakNits = std::isfinite( desc.MaxLuminance ) && desc.MaxLuminance >= 80.0f
+                            ? std::min( 10000.0f, desc.MaxLuminance ) : 1000.0f;
+                    }
+                    break;
                 }
             }
         }
     }
-
-    if ( isDisplayHDR10 ) {
-        switch ( GetBackBufferFormat() ) {
-        case DXGI_FORMAT_R11G11B10_FLOAT: //origial DXGI_FORMAT_R10G10B10A2_UNORM
-            // The application creates the HDR10 signal.
-            colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-            break;
-
-        case DXGI_FORMAT_R16G16B16A16_FLOAT:
-            // The system creates the HDR10 signal; application uses linear values.
-            colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
-            break;
-
-        default:
-            break;
-        }
-    }
-
-    UINT colorSpaceSupport = 0;
-    if ( SUCCEEDED( SwapChain3->CheckColorSpaceSupport( colorSpace, &colorSpaceSupport ) )
-        && (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ) {
-        SwapChain3->SetColorSpace1( colorSpace );
-        LogInfo() << "Using HDR Monitor ColorSpace";
+    if ( wasHDR != m_HDR ) {
+        LogInfo() << (m_HDR ? "HDR display output active: FP16 scRGB, peak nits: " : "SDR display output active, peak nits: ")
+            << (m_HDR ? GetHDRPeakNits() : 80.0f);
     }
 }
 
@@ -5873,7 +6009,7 @@ LRESULT D3D11GraphicsEngine::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam
         case WM_ENTERIDLE: UpdateFocus( hWnd, false ); break;
         case WM_WINDOWPOSCHANGED: UpdateClipCursor( hWnd ); break;
     }
-    if ( UIView ) {
+    if ( UIView && UIView->GetRenderTarget() ) {
         UIView->OnWindowMessage( hWnd, msg, wParam, lParam );
     }
     return 0;
@@ -6345,7 +6481,10 @@ void D3D11GraphicsEngine::CreateMainUIView() {
         UIView = std::make_unique<D2DView>();
 
         wrl::ComPtr<ID3D11Texture2D> tex;
-        BackbufferRTV->GetResource( reinterpret_cast<ID3D11Resource**>(tex.ReleaseAndGetAddressOf()) );
+        if ( m_HDRSwapChain )
+            tex = HDRD2DUI->GetTexture();
+        else
+            BackbufferRTV->GetResource( reinterpret_cast<ID3D11Resource**>(tex.ReleaseAndGetAddressOf()) );
         if ( XR_SUCCESS != UIView->Init( Resolution, tex.Get() ) ) {
             UIView.reset();
             return;

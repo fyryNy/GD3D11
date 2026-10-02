@@ -33,6 +33,17 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 {
     float4 sample = TX_Scene.Sample(SS_Linear, Input.vTexcoord);
     float3 HDRColor = sample.rgb;
+	if (HDR_Output > 0.5f)
+	{
+		float3 linearColor = HDRExposeScene(HDRColor, TX_Lum, SS_Linear);
+		if (HDR_BloomStrength > 0.0f)
+			linearColor += max(TX_Bloom.Sample(SS_Linear, Input.vTexcoord).rgb, 0.0f) * HDR_BloomStrength;
+		float peakRelativeToWhite = HDR_PeakNits / max(HDR_PaperWhiteNits, 1.0f);
+		linearColor = HDRShoulder(linearColor, peakRelativeToWhite);
+		// Gothic draws its encoded HUD after this pass. Keep the shared buffer
+		// in extended sRGB until the final scRGB presentation conversion.
+		return float4(HDRLinearToSRGB(linearColor), 1.0f);
+	}
 	//HDRColor = float3(Input.vTexcoord.r, 0, 0);
 #if USE_TONEMAP == 0
 		float3 toneMapped = saturate(ToneMap_jafEq4(HDRColor, TX_Lum, SS_Linear));

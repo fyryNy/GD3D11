@@ -34,6 +34,15 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
 	float4 sample = TX_Scene.Sample(SS_Linear, Input.vTexcoord);
 	float3 HDRColor = sample.rgb;
+	if (HDR_Output > 0.5f)
+	{
+		float3 exposed = HDRExposeScene(HDRColor, TX_Lum, SS_Linear);
+		// Extract unbounded linear highlights before the display shoulder.
+		float brightest = max(exposed.r, max(exposed.g, exposed.b));
+		float threshold = max(HDR_Threshold, 0.0f);
+		float brightFraction = max(brightest - threshold, 0.0f) / max(brightest, 0.0001f);
+		return float4(exposed * brightFraction, 1.0f);
+	}
 	
 	// Determine what the pixel's value will be after tone-mapping occurs
 	//float fLumAvg = TX_Lum.SampleLevel(SS_Linear, float2(0.5f, 0.5f), 9).r;
@@ -63,4 +72,3 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	return float4(toneMapped.rgb, 1); 
 }
-

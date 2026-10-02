@@ -106,10 +106,18 @@ XRESULT BaseAntTweakBar::Init() {
     TwAddVarRW( Bar_General, "Draw Fog", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.DrawFog, nullptr );
     TwAddVarRW( Bar_General, "Fog Range", TwDefineEnumFromString( "FogRangeEnum", "3, 4, 5, 6, 7, 8, 9, 10" ), &Engine::GAPI->GetRendererState().RendererSettings.FogRange, nullptr );
 
-    TwAddVarRW( Bar_General, "HDR", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.EnableHDR, nullptr );
+    TwAddVarRW( Bar_General, "HDR", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.EnableHDR,
+        "label='Bloom / SDR tone mapping' group='Post processing' help='Enables bloom and SDR tone mapping. HDR display output is configured separately.'" );
+    TwAddVarRW( Bar_General, "HDRMonitor", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor,
+        "label='HDR display output (restart)' group='HDR display' help='Requires an HDR display and Windows HDR enabled. Save settings and restart the game after changing this option.'" );
+    TwAddVarRW( Bar_General, "HDRPaperWhiteNits", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.HDRPaperWhiteNits,
+        "label='Paper white (nits)' group='HDR display' min=80 max=500 step=1 help='Brightness of diffuse white and menus on an HDR display.'" );
+    TwAddVarRW( Bar_General, "HDRPeakNits", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.HDRPeakNits,
+        "label='Peak brightness (nits)' group='HDR display' min=0 max=10000 step=10 help='Zero uses the peak brightness reported by the display. Set a manual value if that report is inaccurate.'" );
     TwEnumVal hdrToneMapValues[] = { {0, "ToneMap_jafEq4"}, {1, "Uncharted2Tonemap"}, {2, "ACESFilmTonemap"}, {3, "PerceptualQuantizerTonemap"}, {4, "ToneMap_Simple"}, {5, "ACESFittedTonemap"} };
     TwType hdrToneMapType = TwDefineEnum( "HDR_TONEMAP", hdrToneMapValues, 6 );
-    TwAddVarRW( Bar_General, "HDR ToneMap", hdrToneMapType, &Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap, nullptr );
+    TwAddVarRW( Bar_General, "HDR ToneMap", hdrToneMapType, &Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap,
+        "label='SDR tone mapper' group='Post processing' help='Controls SDR tone mapping. HDR display output uses its own luminance mapping.'" );
 
     TwAddVarRW( Bar_General, "SMAA", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.EnableSMAA, nullptr );
     TwAddVarRW( Bar_General, "Sharpen", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor, nullptr );

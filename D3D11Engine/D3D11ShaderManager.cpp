@@ -422,6 +422,9 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo( "PS_PFX_GammaCorrectInv", "PS_PFX_GammaCorrectInv.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GammaCorrectConstantBuffer ) );
 
+    Shaders.push_back( ShaderInfo( "PS_PFX_HDRPresent", "PS_PFX_HDRPresent.hlsl", "p" ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( GammaCorrectConstantBuffer ) );
+
     if ( FeatureRTArrayIndexFromAnyShader ) {
         Shaders.push_back( ShaderInfo( "VS_ExLayered", "VS_ExLayered.hlsl", "v", 1 ) );
         Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );

@@ -678,6 +678,8 @@ struct GothicRendererSettings {
         DisplayFlip = false;
         LowLatency = false;
         HDR_Monitor = false;
+        HDRPaperWhiteNits = 203.0f;
+        HDRPeakNits = 0.0f;
         EnableInactiveFpsLock = true;
         MTResoureceManager = false;
         CompressBackBuffer = false;
@@ -840,6 +842,10 @@ struct GothicRendererSettings {
     bool RunInSpacerNet;
     bool BinkVideoRunning;
     bool EnableWaterAnimation;
+
+    // Append new settings to preserve offsets exposed by GDX_GetRendererSettings.
+    float HDRPaperWhiteNits;
+    float HDRPeakNits; // Zero uses the display's reported peak luminance.
 };
 
 struct GothicRendererTiming {

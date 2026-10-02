@@ -135,6 +135,9 @@ public:
 
     /** Colorspace for HDR-Monitors on Windows 10 */
     void UpdateColorSpace_SwapChain();
+    bool IsHDROutputActive() const { return m_HDR; }
+    float GetHDRPeakNits() const;
+    float GetHDRPaperWhiteNits() const;
 
     /** Sets up texture with normalmap and fxmap for rendering */
     bool BindTextureNRFX( zCTexture* tex, bool bindShader );
@@ -361,6 +364,11 @@ protected:
 
     /** Swapchain buffers */
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> BackbufferRTV;
+    // Legacy menu backends require BGRA8. Ant's coverage is recovered from
+    // black/white renders because its bundled backend writes incorrect alpha.
+    std::unique_ptr<RenderToTextureBuffer> HDRUIBlack;
+    std::unique_ptr<RenderToTextureBuffer> HDRUIWhite;
+    std::unique_ptr<RenderToTextureBuffer> HDRD2DUI;
     std::unique_ptr<RenderToTextureBuffer> GBuffer0_Diffuse;
     std::unique_ptr<RenderToTextureBuffer> GBuffer1_Normals; // Normals
     std::unique_ptr<RenderToTextureBuffer> GBuffer2_SpecIntens_SpecPower; // SpecIntensity / SpecPower
@@ -465,6 +473,10 @@ protected:
     bool m_swapchainflip;
     bool m_lowlatency;
     bool m_HDR;
+    bool m_HDRSwapChain;
+    float m_HDRDisplayPeakNits;
+    DWORD m_HDRLastOutputCheck;
+    Microsoft::WRL::ComPtr<IDXGIFactory1> m_HDROutputFactory;
     int m_previousFpsLimit;
     bool m_isWindowActive;
     float unionCurrentCustomFontMultiplier;

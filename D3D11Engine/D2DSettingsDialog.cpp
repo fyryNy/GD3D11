@@ -197,16 +197,17 @@ XRESULT D2DSettingsDialog::InitControls() {
 	tesselationCheckbox->SetPosition(D2D1::Point2F(5, tesselationCheckbox->GetPosition().y));
 	tesselationCheckbox->SetChecked(Engine::GAPI->GetRendererState().RendererSettings.EnableTesselation);*/
 
+    InitialSettings.HDR_Monitor = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor;
 	SV_Checkbox* hdrCheckbox = new SV_Checkbox( MainView, MainPanel );
 	hdrCheckbox->SetSize( D2D1::SizeF( 160, 20 ) );
     switch ( userLanguage ) {
-    case LANGUAGE_POLISH: hdrCheckbox->SetCaption( L"HDR" ); break;
-    default: hdrCheckbox->SetCaption( L"Enable HDR" ); break;
+    case LANGUAGE_POLISH: hdrCheckbox->SetCaption( L"Wyjście HDR [**]" ); break;
+    default: hdrCheckbox->SetCaption( L"HDR display [**]" ); break;
     }
-	hdrCheckbox->SetDataToUpdate( &Engine::GAPI->GetRendererState().RendererSettings.EnableHDR );
+	hdrCheckbox->SetDataToUpdate( &Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor );
 	hdrCheckbox->AlignUnder( smaaCheckbox, 5 );
 	hdrCheckbox->SetPosition( D2D1::Point2F( 5, hdrCheckbox->GetPosition().y ) );
-	hdrCheckbox->SetChecked( Engine::GAPI->GetRendererState().RendererSettings.EnableHDR );
+	hdrCheckbox->SetChecked( Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor );
 
     InitialSettings.EnableShadows = Engine::GAPI->GetRendererState().RendererSettings.EnableShadows;
 	SV_Checkbox* shadowsCheckbox = new SV_Checkbox( MainView, MainPanel );
@@ -802,6 +803,9 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
         Engine::GAPI->UpdateTextureMaxSize();
     }
 
+    // The output format changes after restart; save the current HDR preference.
+    d->InitialSettings.HDR_Monitor = settings.HDR_Monitor;
+
     // Check for mode change
     if ( d->CurrentWindowMode != d->ActiveWindowMode ) {
         d->ActiveWindowMode = d->CurrentWindowMode;
@@ -818,7 +822,9 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
 		Engine::GraphicsEngine->OnResize( INT2(d->Resolutions[d->ResolutionSetting].Width, d->Resolutions[d->ResolutionSetting].Height) );
         // reposition the window at the center, 
         // or we might not be able to see it 
-        d->SetPositionCentered( D2D1::Point2F( d->MainView->GetRenderTarget()->GetSize().width / 2, d->MainView->GetRenderTarget()->GetSize().height / 2 ), D2D1::SizeF( UI_WIN_SIZE_X, UI_WIN_SIZE_Y ) );
+        if ( d->MainView->GetRenderTarget() ) {
+            d->SetPositionCentered( D2D1::Point2F( d->MainView->GetRenderTarget()->GetSize().width / 2, d->MainView->GetRenderTarget()->GetSize().height / 2 ), D2D1::SizeF( UI_WIN_SIZE_X, UI_WIN_SIZE_Y ) );
+        }
 	}
 	Engine::GAPI->SaveRendererWorldSettings( settings );
 	Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
@@ -827,6 +833,10 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
 /** Checks if a change needs to reload the shaders */
 bool D2DSettingsDialog::NeedsApply() {
 	GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
+
+    if ( InitialSettings.HDR_Monitor != settings.HDR_Monitor ) {
+        return true;
+    }
 
 	// Check for shader reload
 	if ( InitialSettings.EnableShadows != settings.EnableShadows || InitialSettings.EnableSoftShadows != settings.EnableSoftShadows ) {

@@ -5,7 +5,8 @@
 cbuffer LumConvertCB : register( b0 )
 {
 	float LC_DeltaTime;
-	float3 LC_Pad;
+	float LC_FirstFrame;
+	float2 LC_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -35,11 +36,12 @@ float PSMain( PS_INPUT Input ) : SV_TARGET
 {
 	float fLastLum = TX_LumLast.SampleLevel(SS_Linear, float2(0.5f, 0.5f), 9).r;
 	float fCurrentLum = TX_LumCurrent.SampleLevel(SS_Linear, float2(0.5f, 0.5f), 9).r;
+	if (LC_FirstFrame > 0.5f)
+		return max(fCurrentLum, 0.0001f);
 
 	// Adapt the luminance using Pattanaik's technique
 	const float fTau = 0.5f;
-	float fAdaptedLum = fLastLum + (fCurrentLum - fLastLum) * (1 - exp(-LC_DeltaTime * fTau));
+	float fAdaptedLum = fLastLum + (fCurrentLum - fLastLum) * (1 - exp(-max(LC_DeltaTime, 0.0f) * fTau));
 	
-	return clamp(fAdaptedLum, 0, 32.0f); 
+	return clamp(fAdaptedLum, 0.0001f, 32.0f);
 }
-

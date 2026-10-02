@@ -22,5 +22,5 @@ protected:
     RenderToTextureBuffer* LumBuffer2;
     RenderToTextureBuffer* LumBuffer3;
     int ActiveLumBuffer;
+    bool LuminanceInitialized;
 };
-

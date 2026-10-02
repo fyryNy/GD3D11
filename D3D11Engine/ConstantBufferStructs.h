@@ -37,7 +37,9 @@ struct GammaCorrectConstantBuffer {
     float2 G_TextureSize;
 
     float G_SharpenStrength;
-    float3 G_pad1;
+    float G_HDROutput;
+    float G_HDRPaperWhiteNits;
+    float G_HDRPeakNits;
 };
 
 struct BlurConstantBuffer {
@@ -77,7 +79,8 @@ struct HeightfogConstantBuffer {
 
 struct LumAdaptConstantBuffer {
     float LC_DeltaTime;
-    float3 LC_Pad;
+    float LC_FirstFrame;
+    float2 LC_Pad;
 };
 
 struct GodRayZoomConstantBuffer {
@@ -94,6 +97,11 @@ struct HDRSettingsConstantBuffer {
     float HDR_LumWhite;
     float HDR_Threshold;
     float HDR_BloomStrength;
+
+    float HDR_Output;
+    float HDR_PaperWhiteNits;
+    float HDR_PeakNits;
+    float HDR_Pad;
 };
 
 struct ViewportInfoConstantBuffer {
