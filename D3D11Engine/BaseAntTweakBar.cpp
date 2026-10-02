@@ -343,6 +343,16 @@ XRESULT BaseAntTweakBar::Init() {
 /** On window message */
 LRESULT BaseAntTweakBar::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) {
     if ( IsActive ) {
+        // OnResize supplies backbuffer dimensions. TwEventWin would replace
+        // them with the window's potentially DPI-virtualized client size.
+        if ( msg == WM_SIZE ) return 0;
+
+        if ( msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST ) {
+            const POINT p = Engine::GAPI->GetCursorPosition();
+            const int handled = TwMouseMotion( p.x, p.y );
+            // TwEventWin would overwrite this position with raw client pixels.
+            if ( msg == WM_MOUSEMOVE ) return handled;
+        }
         return TwEventWin( hWnd, msg, wParam, lParam );
     }
 
