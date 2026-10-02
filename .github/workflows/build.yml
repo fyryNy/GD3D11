@@ -9,6 +9,15 @@ on:
       - '**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Keep a rolling release update together; a newer push waits instead of cancelling
+# a job halfway through replacing its assets. Other branches can cancel old builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/master' }}
+
 defaults:
   run:
     shell: pwsh
@@ -21,103 +30,199 @@ jobs:
         configuration: [Release_AVX, Release_G1_AVX, Release, Release_G1, Spacer_NET, Launcher]
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-    - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v3
 
-    - name: Set tag and directory name env
-      run: |
-        $shortHash = $Env:GITHUB_SHA.Substring(0, 9)
-        echo (-join("CL=/DVERSION_NUMBER#",'\"',"-git-${shortHash}",'\"')) >> $Env:GITHUB_ENV
+      - name: Set build version
+        run: |
+          $shortHash = $Env:GITHUB_SHA.Substring(0, 9)
+          Add-Content -Path $Env:GITHUB_ENV -Value (-join("CL=/DVERSION_NUMBER#", '\"', "-git-${shortHash}", '\"'))
 
-    - name: Restore NuGet packages
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: nuget restore .
+      - name: Restore NuGet packages
+        run: |
+          nuget restore Direct3D7Wrapper.sln
+          if ($LASTEXITCODE -ne 0) { throw "NuGet restore failed: $LASTEXITCODE" }
 
-    - name: Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=${{matrix.configuration}} .
-      
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: ${{ matrix.configuration }}
-        path: ${{ matrix.configuration }}/ddraw.dll
-        retention-days: 2
+      - name: Build
+        env:
+          BUILD_CONFIGURATION: ${{ matrix.configuration }}
+        # Both Launcher projects request v145, but windows-latest has VS 2022
+        # (v143); the bundled assimp library also uses v143.
+        run: |
+          msbuild Direct3D7Wrapper.sln "/p:Configuration=$Env:BUILD_CONFIGURATION" /p:Platform=Win32 /p:PlatformToolset=v143
+          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed: $LASTEXITCODE" }
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: binary-${{ matrix.configuration }}
+          path: ${{ matrix.configuration }}/ddraw.dll
+          if-no-files-found: error
+          retention-days: 2
 
   artifacts:
     needs: build
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-    - name: Set tag and directory name env
-      run: |
-        $tagName = $Env:GITHUB_SHA.Substring(0, 9)
-        $dirName = "GD3D11-git-$tagName"
-        echo "Tag: ${tagName}"
-        echo "Directory: ${dirName}"
-        echo "RELEASE_VERSION=${tagName}" >> $Env:GITHUB_ENV
-        echo "RELEASE_DIR=${dirName}" >> $Env:GITHUB_ENV
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: binary-*
+          path: binaries
 
-    - uses: actions/download-artifact@v3
-    
-    - name: Display structure of downloaded files
-      run: ls -R
-    
-    - name: Create distribution
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: |
-        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT" -Force
-        mkdir "${{env.RELEASE_DIR}}\GD3D11\Bin" -Force
-        Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders" /s
-        copy "D3D11Engine\CSFFT\*.hlsl" "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
-        Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
-        Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
-        Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
-        copy "Release_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
-        copy "Release\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a.dll"
-        copy "Release_G1_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx.dll"
-        copy "Release_G1\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1.dll"
-        copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: ${{ env.RELEASE_DIR }}
-        path: ${{ env.RELEASE_DIR }}
+      - name: Create distributions and checksums
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $suffix = if ($Env:GITHUB_REF -eq 'refs/heads/dev') { 'dev' } else { "git-$($Env:GITHUB_SHA.Substring(0, 9))" }
+          $packages = New-Item -Path 'packages' -ItemType Directory -Force
 
-    - name: zip distribution for nightly
-      if: github.ref_name == 'master'
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: |
-        cd "${{env.RELEASE_DIR}}"
-        7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r
+          function New-Distribution([string]$name, [bool]$spacer) {
+            $dir = Join-Path $Env:RUNNER_TEMP $name
+            New-Item -Path "$dir/GD3D11/shaders" -ItemType Directory -Force | Out-Null
+            Copy-Item 'D3D11Engine/Shaders/*' "$dir/GD3D11/shaders" -Recurse -Force
+            Copy-Item 'blobs/Meshes', 'blobs/Textures' "$dir/GD3D11" -Recurse -Force
+            Copy-Item 'blobs/libs/*' $dir -Recurse -Force
 
-    - name: Calculate distribution zip hash
-      if: github.ref_name == 'master'
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: |
-        (Get-FileHash "${{env.RELEASE_DIR}}.zip" -Algorithm SHA256).hash | Out-File -FilePath "${{env.RELEASE_DIR}}.zip.sha256"
-        type "${{env.RELEASE_DIR}}.zip.sha256"
-    
-    - name: Delete old nightly
-      if: github.ref_name == 'master'
-      uses: dev-drprasad/delete-tag-and-release@v0.2.1
-      with:
-        delete_release: true
-        tag_name: nightly
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            if ($spacer) {
+              # Some source distributions supply this optional Spacer data folder.
+              if (Test-Path 'blobs/data') { Copy-Item 'blobs/data' "$dir/GD3D11" -Recurse -Force }
+              Copy-Item 'binaries/binary-Spacer_NET/ddraw.dll' "$dir/ddraw.dll"
+            } else {
+              New-Item -Path "$dir/GD3D11/Bin" -ItemType Directory -Force | Out-Null
+              $variants = @{
+                Release_AVX = 'g2a_avx2.dll'
+                Release = 'g2a.dll'
+                Release_G1_AVX = 'g1_avx.dll'
+                Release_G1 = 'g1.dll'
+              }
+              foreach ($variant in $variants.GetEnumerator()) {
+                Copy-Item "binaries/binary-$($variant.Key)/ddraw.dll" "$dir/GD3D11/Bin/$($variant.Value)"
+              }
+              Copy-Item 'binaries/binary-Launcher/ddraw.dll' "$dir/ddraw.dll"
+            }
 
-    - name: Create new nightly
-      uses: ncipollo/release-action@v1
-      with:
-        name: Nightly
-        generateReleaseNotes: true
-        prerelease: true
-        artifacts: "${{env.RELEASE_DIR}}.zip,{{env.RELEASE_DIR}}.zip.sha256"
-        tag: nightly
-        token: ${{ secrets.GITHUB_TOKEN }}
+            $zip = Join-Path $packages.FullName "$name.zip"
+            Push-Location $dir
+            try {
+              7z a -tzip $zip .
+              if ($LASTEXITCODE -ne 0) { throw "Distribution archive failed: $LASTEXITCODE" }
+            } finally { Pop-Location }
+            $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -Path "$zip.sha256" -Value "$hash  $name.zip" -Encoding ascii
+          }
+
+          New-Distribution "GD3D11-$suffix" $false
+          New-Distribution "SpacerNET-GD3D11-$suffix" $true
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: distributions
+          path: packages/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: artifacts
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: distributions
+          path: packages
+
+      - name: Update rolling prerelease
+        working-directory: packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/heads/dev) branch=dev; tag=dev; title=Development; suffix=dev ;;
+            refs/heads/master) branch=master; tag=nightly; title=Nightly; suffix="git-${GITHUB_SHA:0:9}" ;;
+            *) exit 1 ;;
+          esac
+          assets=("GD3D11-$suffix.zip" "GD3D11-$suffix.zip.sha256"
+                  "SpacerNET-GD3D11-$suffix.zip" "SpacerNET-GD3D11-$suffix.zip.sha256")
+          sha256sum --check --strict "${assets[1]}" "${assets[3]}"
+
+          # Concurrency does not guarantee queue order. Never publish an older run
+          # after the branch has advanced, including a manual rerun of an old SHA.
+          head_sha=$(gh api "repos/$GH_REPO/git/ref/heads/$branch" --jq '.object.sha')
+          if [[ "$head_sha" != "$GITHUB_SHA" ]]; then
+            echo "Skipped $GITHUB_SHA: $branch is now at $head_sha." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          default_branch=$(gh api "repos/$GH_REPO" --jq '.default_branch')
+
+          release_id=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")
+          if [[ -n "$release_id" ]]; then
+            immutable=$(gh api "repos/$GH_REPO/releases/$release_id" --jq '.immutable // false')
+            if [[ "$immutable" == true ]]; then
+              echo "::error::The $tag release is immutable; rolling prereleases require mutable assets and tags."
+              exit 1
+            fi
+          fi
+
+          # --target/target_commitish does not move an existing tag. Set the ref
+          # explicitly so the source archive and release binaries use the same SHA.
+          tag_sha=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" \
+            --jq ".[] | select(.ref == \"refs/tags/$tag\") | .object.sha")
+          if [[ -n "$tag_sha" ]]; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" \
+              -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
+          fi
+
+          notes="$RUNNER_TEMP/rolling-release.md"
+          cat > "$notes" <<EOF
+          Automated $title build from [$GITHUB_SHA](https://github.com/$GH_REPO/commit/$GITHUB_SHA).
+
+          Includes Gothic 1/2 launcher variants and a separate SpacerNET package.
+          [Build log](https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID)
+          EOF
+          if [[ -z "$release_id" ]]; then
+            gh release create "$tag" --verify-tag --draft --prerelease --latest=false \
+              --title "$title" --notes-file "$notes"
+          fi
+          gh release upload "$tag" "${assets[@]}" --clobber
+
+          # Remove legacy or commit-suffixed assets only after uploading this build.
+          old_assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          while IFS= read -r asset; do
+            [[ -z "$asset" ]] && continue
+            keep=false
+            for expected in "${assets[@]}"; do
+              [[ "$asset" == "$expected" ]] && keep=true
+            done
+            if [[ "$keep" == false ]]; then gh release delete-asset "$tag" "$asset" --yes; fi
+          done <<< "$old_assets"
+
+          # Release target metadata is separate from the existing tag. Keep it on
+          # the default branch so workflow changes on dev do not require a PAT.
+          gh release edit "$tag" --draft=false --prerelease --latest=false --target "$default_branch" \
+            --title "$title" --notes-file "$notes"
+          echo "Published [$title](https://github.com/$GH_REPO/releases/tag/$tag) from $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"

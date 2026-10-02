@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 defaults:
   run:
     shell: pwsh
@@ -14,7 +17,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v7
 
     - name: Set tag and directory name env
       run: |
@@ -26,7 +29,7 @@ jobs:
         echo "RELEASE_DIR=${dirName}" >> $Env:GITHUB_ENV
 
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1
+      uses: microsoft/setup-msbuild@v3
 
     - name: Restore NuGet packages
       working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -34,15 +37,17 @@ jobs:
 
     - name: Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Spacer_NET .
+      # Match the hosted VS 2022 toolset and the bundled vc143 libraries.
+      run: msbuild /p:Configuration=Spacer_NET /p:Platform=Win32 /p:PlatformToolset=v143 .
 
     - name: Create distribution zip
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
-        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
+        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders" -Force
         Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders" /s
-        copy "D3D11Engine\CSFFT\*.hlsl" "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
-        Xcopy "blobs\data" "${{env.RELEASE_DIR}}\GD3D11\data\" /s
+        if (Test-Path "blobs\data") {
+          Copy-Item "blobs\data" "${{env.RELEASE_DIR}}\GD3D11" -Recurse -Force
+        }
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s

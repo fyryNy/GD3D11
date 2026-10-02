@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 defaults:
   run:
     shell: pwsh
@@ -14,7 +17,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set tag and directory name env
       run: |
@@ -28,7 +31,7 @@ jobs:
         echo (-join("CL=/DVERSION_NUMBER#",'\"',"${tagName}-${shortHash}",'\"')) >> $Env:GITHUB_ENV
 
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1
+      uses: microsoft/setup-msbuild@v3
 
     - name: Restore NuGet packages
       working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -36,31 +39,31 @@ jobs:
 
     - name: Build G2 NotR AVX
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Release_AVX .
+      # Hosted VS 2022 and bundled vc143 libraries require v143, including Launcher.
+      run: msbuild /p:Configuration=Release_AVX /p:Platform=Win32 /p:PlatformToolset=v143 .
 
     - name: Build G1 AVX
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Release_G1_AVX .
+      run: msbuild /p:Configuration=Release_G1_AVX /p:Platform=Win32 /p:PlatformToolset=v143 .
 
     - name: Build G2 NotR
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Release .
+      run: msbuild /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 .
 
     - name: Build G1
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Release_G1 .
+      run: msbuild /p:Configuration=Release_G1 /p:Platform=Win32 /p:PlatformToolset=v143 .
 
     - name: Build Launcher
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Launcher .
+      run: msbuild /p:Configuration=Launcher /p:Platform=Win32 /p:PlatformToolset=v143 .
 
     - name: Create distribution zip
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
-        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT" -Force
+        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders" -Force
         mkdir "${{env.RELEASE_DIR}}\GD3D11\Bin" -Force
         Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders" /s
-        copy "D3D11Engine\CSFFT\*.hlsl" "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
