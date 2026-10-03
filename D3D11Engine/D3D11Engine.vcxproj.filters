@@ -130,6 +130,12 @@
     <ClInclude Include="PortalVisibility.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12RayTracing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RayTracingScene.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="PortalOcclusion.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
@@ -962,6 +968,12 @@
     </ClCompile>
     <ClCompile Include="GMeshSimple.cpp" />
     <ClCompile Include="BaseShadowedPointLight.cpp" />
+    <ClCompile Include="D3D12RayTracing.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RayTracingScene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D3D11GraphicsEngine.cpp">
       <Filter>Engine\D3D11\Engine</Filter>
     </ClCompile>

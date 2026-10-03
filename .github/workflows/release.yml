@@ -63,6 +63,10 @@ jobs:
       run: |
         mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders" -Force
         mkdir "${{env.RELEASE_DIR}}\GD3D11\Bin" -Force
+        $dxc = 'packages/Microsoft.Direct3D.DXC.1.8.2502.7'
+        Copy-Item "$dxc/build/native/bin/x86/dxcompiler.dll", "$dxc/build/native/bin/x86/dxil.dll" "${{env.RELEASE_DIR}}/GD3D11/Bin"
+        Copy-Item "$dxc/LICENSE-MS.txt" "${{env.RELEASE_DIR}}/GD3D11/Bin/LICENSE-DXC-MS.txt"
+        Copy-Item "$dxc/LICENSE-LLVM.txt" "${{env.RELEASE_DIR}}/GD3D11/Bin/LICENSE-DXC-LLVM.txt"
         Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders" /s
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s

@@ -6,6 +6,8 @@
 #include "zCPolyStrip.h"
 #include "zTypes.h"
 #include "PortalVisibility.h"
+#include "PortalOcclusion.h"
+#include <deque>
 
 #define START_TIMING Engine::GAPI->GetRendererState().RendererInfo.Timing.Start
 #define STOP_TIMING Engine::GAPI->GetRendererState().RendererInfo.Timing.Stop
@@ -495,8 +497,10 @@ public:
     void CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs );
 
     /** Native room ownership and visible portals constrain static world vobs. */
-    bool IsVobVisibleInPortalRoom( zCVob* vob ) const;
+    bool IsVobVisibleInPortalRoom( zCVob* vob );
     bool HasRoomPortalVisibilityData() const;
+    const std::unordered_map<zCVob*, VobInfo*>& GetStaticVobMap() const { return VobMap; }
+    uint64_t GetWorldGeometryGeneration() const { return WorldGeometryGeneration; }
 
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
@@ -720,18 +724,39 @@ public:
 private:
     struct RoomPortalOccluder {
         zCPolygon* Polygon = nullptr;
-        std::vector<PortalVisibility::Vec3> Vertices;
+        PortalOcclusion::Polygon Geometry;
         PortalVisibility::Vec3 Normal{}, Minimum{}, Maximum{};
         float Distance = 0;
         bool Ghost = false;
+        zCMaterial* Material = nullptr;
+        MaterialInfo* MeshMaterial = nullptr;
+        size_t MeshRevision = 0;
     };
 
+    struct RoomPortalOccluderNode {
+        PortalVisibility::Vec3 Minimum{}, Maximum{};
+        size_t First = 0, Count = 0, Left = 0, Right = 0;
+    };
+
+    struct RoomPortalOcclusionCache {
+        std::vector<zCPolygon*> Polygons;
+        PortalVisibility::Vec3 DiscoveryPosition{};
+        DWORD DiscoveryTime = 0;
+        size_t NextSample = 0;
+        bool HasDiscoveryPosition = false, Queued = false;
+    };
+
+    struct RoomPortalMaterialOpacity { size_t Frame = 0; bool Opaque = false; };
+
     void BuildRoomPortalVisibility( zCBspTree* tree );
+    void ResetRoomPortalOcclusion();
     void UpdateRoomPortalVisibility();
+    void BuildRoomPortalOccluderIndex();
+    void DiscoverRoomPortalOccluders( const PortalVisibility::Vec3& camera );
     bool CopyRoomPortalOccluder( zCPolygon* polygon, RoomPortalOccluder& occluder ) const;
-    bool IsOpaqueRoomPortalOccluder( const RoomPortalOccluder& occluder ) const;
-    bool IsRoomPortalOccluded( const std::vector<PortalVisibility::Vec3d>& vertices,
-        const PortalVisibility::Vec3& camera, size_t& traceBudget ) const;
+    bool IsOpaqueRoomPortalOccluder( RoomPortalOccluder& occluder );
+    bool IsRoomPortalOccluded( const PortalVisibility::Portal& portal,
+        const std::vector<PortalVisibility::Vec3d>& vertices, const PortalVisibility::Vec3& camera );
 
     /** Collects polygons in the given AABB */
     void CollectPolygonsInAABBRec( BspInfo* base, const zTBBox3D& bbox, std::vector<zCPolygon*>& list );
@@ -905,5 +930,19 @@ private:
     PortalVisibility RoomPortalVisibility;
     std::unordered_map<zCBspSector*, size_t> RoomPortalSectorIDs;
     std::vector<RoomPortalOccluder> RoomPortalOccluders;
+    std::unordered_map<zCPolygon*, size_t> RoomPortalAuthoredOccluderLookup;
+    std::vector<size_t> RoomPortalOccluderIndices, RoomPortalOccluderQueryStack;
+    std::vector<RoomPortalOccluderNode> RoomPortalOccluderNodes;
+    std::unordered_map<zCPolygon*, RoomPortalOccluder> RoomPortalRayOccluders;
+    std::unordered_map<const PortalVisibility::Portal*, RoomPortalOcclusionCache> RoomPortalOcclusionCaches;
+    std::unordered_map<size_t, size_t> RoomPortalRoomUseFrames;
+    std::deque<const PortalVisibility::Portal*> RoomPortalDiscoveryQueue;
+    std::unordered_map<zCMaterial*, RoomPortalMaterialOpacity> RoomPortalMaterialOpacities;
+    std::vector<const PortalOcclusion::Polygon*> RoomPortalBlockerViews;
+    std::vector<PortalOcclusion::Vec3> RoomPortalTarget;
+    size_t RoomPortalFrame = 0, RoomPortalMeshRevision = 1;
+    size_t RoomPortalWorkBudget = 0, RoomPortalCandidateBudget = 0;
+    bool RoomPortalVisibilityUpdated = false;
     bool RoomPortalVisibilityReady = false;
+    uint64_t WorldGeometryGeneration = 1;
 };

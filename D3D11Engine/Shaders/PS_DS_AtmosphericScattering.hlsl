@@ -26,7 +26,7 @@ cbuffer DS_ScreenQuadConstantBuffer : register( b0 )
 	float SQ_ShadowStrength;
 	float SQ_ShadowAOStrength;
 	float SQ_WorldAOStrength;
-	float SQ_Pad;
+	float SQ_RayTracingFlags;
 };
 
 //--------------------------------------------------------------------------------------
@@ -43,6 +43,8 @@ Texture2D	TX_RainShadowmap : register( t4 );
 TextureCube	TX_ReflectionCube : register( t5 );
 Texture2D	TX_Distortion : register( t6 );
 Texture2D	TX_SI_SP : register( t7 );
+Texture2D<float> TX_RayTracingShadow : register( t8 );
+Texture2D<float4> TX_RayTracingReflection : register( t9 );
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -262,9 +264,10 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, float3
 }
 
 /** Returns new diffusecolor (rgb)*/
-void ApplySceneWettness(float3 wsPosition, float3 wsPositionDX, float3 wsPositionDY, float3 vsPosition, float3 vsDir, inout float3 vsNormal, inout float3 diffuse, float specIntensity, float specPower, out float3 specAdd)
+void ApplySceneWettness(float2 screenUV, float3 wsPosition, float3 wsPositionDX, float3 wsPositionDY, float3 vsPosition, float3 vsDir, inout float3 vsNormal, inout float3 diffuse, float specIntensity, float specPower, out float3 specAdd, out float wetnessWeight)
 {
 	specAdd = 0.0f;
+	wetnessWeight = 0.0f;
 	// Ask the rain-shadowmap if we can hit this pixel
 	float pixelWettnes = ComputeShadowValue(0.0f, wsPosition, TX_RainShadowmap, SS_Comp, vsPosition.z, 1.0f, mul(SQ_RainView, SQ_RainProj), 0.0001f, 2.5f) * saturate(AC_SceneWettness);
 	float3 originalNormal = vsNormal;
@@ -273,6 +276,7 @@ void ApplySceneWettness(float3 wsPosition, float3 wsPositionDX, float3 wsPositio
 	// Walls retain a thin wet film; horizontal surfaces retain more water.
 	pixelWettnes *= lerp(0.2f, 1.0f, upward * upward) * (1.0f - saturate(-wsNormal.y));
 	if (pixelWettnes < 0.001f) return;
+	wetnessWeight = pixelWettnes;
 
 	// Keep the material's own highlight shape and color. Wetness mainly darkens
 	// the texture; it must not turn grass or a matte FX-map region into a mirror.
@@ -293,6 +297,14 @@ void ApplySceneWettness(float3 wsPosition, float3 wsPositionDX, float3 wsPositio
 	// The sky cubemap is world-oriented and has rough mips for a softer reflection.
 	float3 reflect_vec = mul(reflect(-vsDir, vsNormal), (float3x3)SQ_InvView);
 	float4 refCube = TX_ReflectionCube.SampleLevel(SS_Linear, reflect_vec, lerp(4.0f, 2.0f, gloss));
+	if ((uint(SQ_RayTracingFlags) & 2u) != 0)
+	{
+		uint width, height;
+		TX_RayTracingReflection.GetDimensions(width, height);
+		float4 traced = TX_RayTracingReflection.Load(int3(int2(screenUV * float2(width, height)), 0));
+		refCube.rgb = lerp(refCube.rgb, max(traced.rgb, 0.0f), saturate(traced.a));
+		refCube.a = max(refCube.a, saturate(traced.a));
+	}
 	specAdd = max(refCube.rgb, 0.0f) * saturate(refCube.a) * fresnel * materialResponse * pixelWettnes * 0.35f;
 }
 
@@ -340,6 +352,12 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float shadow = vertLighting;
 #endif
 	//shadow = 1.0f;
+	if ((uint(SQ_RayTracingFlags) & 1u) != 0)
+	{
+		// Retain animated casters from the raster shadow map while adding static
+		// geometry rays, including casters outside that map's covered region.
+		shadow = min(shadow, TX_RayTracingShadow.Load(int3(int2(Input.vPosition.xy), 0)));
+	}
 
 	// Sunrays
 	/*float3 vsDir = normalize(vsPosition);
@@ -360,11 +378,12 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Compute wettness
 	float3 specWet = 0.0f;
+	float pixelWetness = 0.0f;
 	
 #ifdef APPLY_RAIN_EFFECTS
 	float3 wsPositionDX, wsPositionDY;
 	ComputeRainPositionGradients(uv, expDepth, vsPosition, normal, wsPositionDX, wsPositionDY);
-	ApplySceneWettness(wsPosition, wsPositionDX, wsPositionDY, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet);
+	ApplySceneWettness(uv, wsPosition, wsPositionDX, wsPositionDY, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet, pixelWetness);
 #endif
 	// Compute specular lighting
 	
@@ -395,6 +414,15 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float3 litPixel = lerp( diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO, 
 							diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun) 
 					  + specColored + specWet;
+	if ((uint(SQ_RayTracingFlags) & 2u) != 0)
+	{
+		float4 traced = TX_RayTracingReflection.Load(int3(int2(Input.vPosition.xy), 0));
+		// Respect material gloss: ray tracing must not make every matte surface wet.
+		float response = saturate(specIntensity * 4.0f) * smoothstep(16.0f, 128.0f, specPower);
+		float reflectionFresnel = 0.02f + 0.98f * pow(1.0f - saturate(dot(normal, V)), 5.0f);
+		litPixel += max(traced.rgb, 0.0f) * saturate(traced.a) * response * reflectionFresnel *
+			(1.0f - saturate(pixelWetness)) * 0.35f;
+	}
 	
     float fresnel = pow(1.0f - saturate(dot(normal, V)), 10.0f);
     litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);

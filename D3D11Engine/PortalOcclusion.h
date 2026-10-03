@@ -16,32 +16,88 @@ public:
     struct Polygon { std::vector<Vec3> vertices; };
 
     static bool IsFullyOccluded( const std::vector<Vec3>& portal, const Vec3& camera,
-        const std::vector<Polygon>& blockers ) {
+        const std::vector<Polygon>& blockers, size_t* remainingWork = nullptr ) {
+        std::vector<const Polygon*> views;
+        views.reserve( blockers.size() );
+        for ( const Polygon& blocker : blockers ) views.push_back( &blocker );
+        return IsFullyOccludedViews( portal, camera, views, remainingWork );
+    }
+
+    // Cached world geometry can be tested without copying its vertex arrays.
+    // A shared budget bounds all portal proofs in one frame, rather than each door.
+    static bool IsFullyOccludedViews( const std::vector<Vec3>& portal, const Vec3& camera,
+        const std::vector<const Polygon*>& blockers, size_t* remainingWork = nullptr ) {
         if ( !Finite( camera ) || portal.size() < 3 || portal.size() > MaxVertices ||
             blockers.empty() || blockers.size() > MaxBlockers ) return false;
 
         Context context;
         context.camera = camera;
+        context.remainingWork = remainingWork;
+        if ( !Spend( context, portal.size() * portal.size() ) ) return false;
         std::vector<Vec3> points;
         if ( !RelativeVertices( portal, camera, points ) ) return false;
         Face portalFace;
         if ( !ValidateFace( points, portalFace ) ) return false;
         if ( std::abs( portalFace.distance ) <= NumericalDistance( points ) ) return false;
         context.projectionAxis = DominantAxis( portalFace.normal );
+        context.nextPlaneID = points.size();
+
+        // An uncovered interior point proves the doorway cannot be fully hidden.
+        // Keep validated volumes for the exact union proof when samples are covered.
+        std::vector<std::vector<Plane>> volumes;
+        volumes.reserve( blockers.size() );
+        Vec3 center{};
+        for ( const Vec3& point : points ) {
+            center.x += point.x / points.size();
+            center.y += point.y / points.size();
+            center.z += point.z / points.size();
+        }
+        std::vector<Vec3> samples{center};
+        for ( const Vec3& point : points ) {
+            samples.push_back( {center.x * 0.37 + point.x * 0.63,
+                center.y * 0.37 + point.y * 0.63, center.z * 0.37 + point.z * 0.63} );
+        }
+        std::vector<bool> covered( samples.size(), false );
+        const double tolerance = NumericalDistance( points );
+        for ( const Polygon* blocker : blockers ) {
+            if ( !blocker ) continue;
+            if ( !Spend( context, blocker->vertices.size() * blocker->vertices.size() ) ) return false;
+            std::vector<Plane> volume;
+            if ( !BuildShadowVolume( blocker->vertices, context, volume ) ) {
+                if ( context.exhausted ) return false;
+                continue;
+            }
+            bool overlaps = true;
+            for ( const Plane& plane : volume ) {
+                if ( !Spend( context, points.size() + 1 ) ) return false;
+                bool someInside = false;
+                for ( const Vec3& point : points ) {
+                    someInside = someInside || Dot( plane.normal, point ) - plane.distance >= -tolerance;
+                }
+                if ( !someInside ) { overlaps = false; break; }
+            }
+            if ( overlaps ) {
+                for ( size_t i = 0; i < samples.size(); ++i ) {
+                    if ( covered[i] ) continue;
+                    bool inside = true;
+                    if ( !Spend( context, volume.size() ) ) return false;
+                    for ( const Plane& plane : volume ) {
+                        inside = inside && Dot( plane.normal, samples[i] ) - plane.distance >= -tolerance;
+                    }
+                    covered[i] = inside;
+                }
+                volumes.push_back( std::move( volume ) );
+            }
+        }
+        if ( std::find( covered.begin(), covered.end(), false ) != covered.end() ) return false;
 
         Fragment initial;
         for ( size_t i = 0; i < points.size(); ++i ) {
             initial.push_back( {points[i], {i, (i + points.size() - 1) % points.size()}} );
         }
-        context.nextPlaneID = points.size();
         std::vector<Fragment> remaining{std::move( initial )};
 
-        for ( const Polygon& blocker : blockers ) {
-            std::vector<Plane> volume;
-            if ( !BuildShadowVolume( blocker.vertices, context, volume ) ) {
-                if ( context.exhausted ) return false;
-                continue;
-            }
+        for ( const auto& volume : volumes ) {
             std::vector<Fragment> survivors;
             for ( const Fragment& fragment : remaining ) {
                 Fragment inside = fragment;
@@ -88,8 +144,20 @@ private:
         unsigned projectionAxis = 0;
         size_t nextPlaneID = 0, work = 0;
         bool exhausted = false;
+        size_t* remainingWork = nullptr;
         std::map<Edge, Plane> edges;
     };
+
+    static bool Spend( Context& context, size_t work ) {
+        if ( work > MaxWork - context.work ||
+            (context.remainingWork && work > *context.remainingWork) ) {
+            context.exhausted = true;
+            return false;
+        }
+        context.work += work;
+        if ( context.remainingWork ) *context.remainingWork -= work;
+        return true;
+    }
 
     static bool Finite( const Vec3& v ) {
         return std::isfinite( v.x ) && std::isfinite( v.y ) && std::isfinite( v.z );
@@ -268,8 +336,7 @@ private:
     }
     static bool Split( const Fragment& source, const Plane& plane, Context& context,
         Fragment& inside, Fragment& outside ) {
-        context.work += source.size();
-        if ( context.work > MaxWork ) return false;
+        if ( !Spend( context, source.size() ) ) return false;
         std::vector<double> distances;
         distances.reserve( source.size() );
         bool anyPositive = false;

@@ -17,3 +17,8 @@ Xcopy "blobs\Textures" "%TARGET_DIR%\GD3D11\Textures\" /y /s
 
 Xcopy "blobs\libs\*" "%TARGET_DIR%\" /y /s
 
+mkdir "%TARGET_DIR%\GD3D11\Bin"
+COPY /y "packages\Microsoft.Direct3D.DXC.1.8.2502.7\build\native\bin\x86\dxcompiler.dll" "%TARGET_DIR%\GD3D11\Bin\"
+COPY /y "packages\Microsoft.Direct3D.DXC.1.8.2502.7\build\native\bin\x86\dxil.dll" "%TARGET_DIR%\GD3D11\Bin\"
+COPY /y "packages\Microsoft.Direct3D.DXC.1.8.2502.7\LICENSE-MS.txt" "%TARGET_DIR%\GD3D11\Bin\LICENSE-DXC-MS.txt"
+COPY /y "packages\Microsoft.Direct3D.DXC.1.8.2502.7\LICENSE-LLVM.txt" "%TARGET_DIR%\GD3D11\Bin\LICENSE-DXC-LLVM.txt"

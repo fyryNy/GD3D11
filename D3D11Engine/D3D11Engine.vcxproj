@@ -860,6 +860,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GMeshSimple.h" />
     <ClInclude Include="GothicAPI.h" />
     <ClInclude Include="PortalVisibility.h" />
+    <ClInclude Include="D3D12RayTracing.h" />
+    <ClInclude Include="RayTracingScene.h" />
     <ClInclude Include="PortalOcclusion.h" />
     <ClInclude Include="GothicGraphicsState.h" />
     <ClInclude Include="GothicMemoryLocations.h" />
@@ -1043,6 +1045,17 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11CShader.cpp" />
     <ClCompile Include="D3D11Effect.cpp" />
     <ClCompile Include="D3D11GodRayEffect.cpp" />
+    <ClCompile Include="D3D12RayTracing.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExceptionHandling Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">Async</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\packages\Microsoft.Direct3D.DXC.1.8.2502.7\build\native\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="RayTracingScene.cpp">
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <ExceptionHandling Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">Async</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="D3D11GraphicsEngine.cpp" />
     <ClCompile Include="D3D11GraphicsEngineBase.cpp" />
     <ClCompile Include="D3D11GShader.cpp" />
@@ -1235,4 +1248,16 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <directxtk-LibPath>$(directxtk-LibPath)\..\Release</directxtk-LibPath>
     <fx11-LibPath>$(fx11-LibPath)\..\Release</fx11-LibPath>
   </PropertyGroup>
+  <Target Name="CopyRayTracingCompiler" AfterTargets="Build">
+    <ItemGroup>
+      <RayTracingCompiler Include="$(ProjectDir)..\packages\Microsoft.Direct3D.DXC.1.8.2502.7\build\native\bin\x86\dxcompiler.dll" />
+      <RayTracingCompiler Include="$(ProjectDir)..\packages\Microsoft.Direct3D.DXC.1.8.2502.7\build\native\bin\x86\dxil.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RayTracingCompiler)" DestinationFolder="$(TargetDir)GD3D11\Bin" SkipUnchangedFiles="true" />
+    <PropertyGroup>
+      <RayTracingGameDir Condition="$(Configuration.Contains('_G1'))">$(G1_SYSTEM_PATH)</RayTracingGameDir>
+      <RayTracingGameDir Condition="!$(Configuration.Contains('_G1'))">$(G2_SYSTEM_PATH)</RayTracingGameDir>
+    </PropertyGroup>
+    <Copy SourceFiles="@(RayTracingCompiler)" DestinationFolder="$(RayTracingGameDir)\GD3D11\Bin" SkipUnchangedFiles="true" Condition="'$(RayTracingGameDir)' != ''" />
+  </Target>
 </Project>
