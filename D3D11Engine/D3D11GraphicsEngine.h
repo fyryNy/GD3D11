@@ -4,7 +4,6 @@
 #include "GothicAPI.h"
 
 struct RenderToDepthStencilBuffer;
-namespace gd3d11rt { class D3D12RayTracing; class SceneAdapter; }
 
 class D3D11IndirectBuffer;
 class D3D11ConstantBuffer;
@@ -419,11 +418,6 @@ protected:
     std::unique_ptr<RenderToDepthStencilBuffer> FrameWaterDepth;
     Microsoft::WRL::ComPtr<ID3D11Predicate> FrameWaterVisible;
     bool WaterPredicateUnavailable = false;
-    std::unique_ptr<gd3d11rt::D3D12RayTracing> RayTracingBackend;
-    std::unique_ptr<gd3d11rt::SceneAdapter> RayTracingScene;
-    bool RayTracingUnavailable = false;
-    std::string RayTracingLastStatus;
-    unsigned int RenderRayTracingFrame();
 
     /** Early particle distortion must preserve the scene normals for god rays. */
     std::unique_ptr<RenderToTextureBuffer> EarlyParticleDistortion;

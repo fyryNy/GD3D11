@@ -499,8 +499,6 @@ public:
     /** Native room ownership and visible portals constrain static world vobs. */
     bool IsVobVisibleInPortalRoom( zCVob* vob );
     bool HasRoomPortalVisibilityData() const;
-    const std::unordered_map<zCVob*, VobInfo*>& GetStaticVobMap() const { return VobMap; }
-    uint64_t GetWorldGeometryGeneration() const { return WorldGeometryGeneration; }
 
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
@@ -944,5 +942,4 @@ private:
     size_t RoomPortalWorkBudget = 0, RoomPortalCandidateBudget = 0;
     bool RoomPortalVisibilityUpdated = false;
     bool RoomPortalVisibilityReady = false;
-    uint64_t WorldGeometryGeneration = 1;
 };

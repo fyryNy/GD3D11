@@ -114,10 +114,6 @@ XRESULT BaseAntTweakBar::Init() {
         "label='Paper white (nits)' group='HDR display' min=80 max=500 step=1 help='Brightness of diffuse white and menus on an HDR display.'" );
     TwAddVarRW( Bar_General, "HDRPeakNits", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.HDRPeakNits,
         "label='Peak brightness (nits)' group='HDR display' min=0 max=10000 step=10 help='Zero uses the peak brightness reported by the display. Set a manual value if that report is inaccurate.'" );
-    TwAddVarRW( Bar_General, "RayTracingShadows", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.RayTracingShadows,
-        "label='Sun shadows (experimental)' group='Ray tracing' help='Requires DXR 1.1 hardware. Traces world geometry and static objects; animated characters retain raster shadows.'" );
-    TwAddVarRW( Bar_General, "RayTracingReflections", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.RayTracingReflections,
-        "label='Reflections (experimental)' group='Ray tracing' help='Requires DXR 1.1 hardware. Textured reflections on opaque specular surfaces; animated characters and water surfaces are not included.'" );
     TwEnumVal hdrToneMapValues[] = { {0, "ToneMap_jafEq4"}, {1, "Uncharted2Tonemap"}, {2, "ACESFilmTonemap"}, {3, "PerceptualQuantizerTonemap"}, {4, "ToneMap_Simple"}, {5, "ACESFittedTonemap"} };
     TwType hdrToneMapType = TwDefineEnum( "HDR_TONEMAP", hdrToneMapValues, 6 );
     TwAddVarRW( Bar_General, "HDR ToneMap", hdrToneMapType, &Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap,

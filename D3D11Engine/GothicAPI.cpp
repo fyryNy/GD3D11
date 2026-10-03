@@ -552,7 +552,6 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 
 /** Resets the object, like at level load */
 void GothicAPI::ResetWorld() {
-    ++WorldGeometryGeneration;
     RoomPortalVisibility.Reset();
     RoomPortalSectorIDs.clear();
     ResetRoomPortalOcclusion();
@@ -1347,7 +1346,6 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     ++RoomPortalMeshRevision;
-    ++WorldGeometryGeneration;
     RoomPortalMaterialOpacities.erase( mat );
 #define UnloadMaterial(cont, m) \
 do { \
@@ -3514,7 +3512,6 @@ void GothicAPI::DebugDrawBSPTree() {
 
 /** Copies immutable native room and portal geometry without running Gothic's render pass. */
 void GothicAPI::BuildRoomPortalVisibility( zCBspTree* tree ) {
-    ++WorldGeometryGeneration;
     RoomPortalVisibility.Reset();
     RoomPortalSectorIDs.clear();
     ResetRoomPortalOcclusion();
@@ -4681,7 +4678,6 @@ void GothicAPI::DrawSkyGothicOriginal() {
 /** Reset's the material info that were previously gathered */
 void GothicAPI::ResetMaterialInfo() {
     ++RoomPortalMeshRevision;
-    ++WorldGeometryGeneration;
     RoomPortalMaterialOpacities.clear();
     MaterialInfos.clear();
 }
@@ -4829,7 +4825,6 @@ void GothicAPI::SaveCustomZENResources() {
 /** Applys the suppressed textures */
 void GothicAPI::ApplySuppressedSectionTextures() {
     ++RoomPortalMeshRevision;
-    ++WorldGeometryGeneration;
     for ( auto const& it : SuppressedTexturesBySection ) {
         WorldMeshSectionInfo* section = it.first;
 
@@ -4851,7 +4846,6 @@ void GothicAPI::ApplySuppressedSectionTextures() {
 /** Resets the suppressed textures */
 void GothicAPI::ResetSupressedTextures() {
     ++RoomPortalMeshRevision;
-    ++WorldGeometryGeneration;
     for ( auto const& it : SuppressedTexturesBySection ) {
         WorldMeshSectionInfo* section = it.first;
 
@@ -5081,8 +5075,6 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "HDR_Monitor", std::to_string( s.HDR_Monitor ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HDRPaperWhiteNits", std::to_string( s.HDRPaperWhiteNits ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HDRPeakNits", std::to_string( s.HDRPeakNits ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "RayTracing", "Shadows", std::to_string( s.RayTracingShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "RayTracing", "Reflections", std::to_string( s.RayTracingReflections ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Display", "StretchWindow", std::to_string( s.StretchWindow ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "UIScale", std::to_string( s.GothicUIScale ).c_str(), ini.c_str() );
@@ -5208,8 +5200,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.HDRPeakNits = GetPrivateProfileFloatA( "Display", "HDRPeakNits", defaultRendererSettings.HDRPeakNits, ini );
         if ( !std::isfinite( s.HDRPeakNits ) ) s.HDRPeakNits = defaultRendererSettings.HDRPeakNits;
         s.HDRPeakNits = std::clamp( s.HDRPeakNits, 0.0f, 10000.0f );
-        s.RayTracingShadows = GetPrivateProfileBoolA( "RayTracing", "Shadows", defaultRendererSettings.RayTracingShadows, ini );
-        s.RayTracingReflections = GetPrivateProfileBoolA( "RayTracing", "Reflections", defaultRendererSettings.RayTracingReflections, ini );
         s.StretchWindow = GetPrivateProfileBoolA( "Display", "StretchWindow", false, ini );
         s.GothicUIScale = GetPrivateProfileFloatA( "Display", "UIScale", 1.0f, ini );
         s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", true, ini );

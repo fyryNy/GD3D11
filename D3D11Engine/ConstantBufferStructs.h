@@ -151,7 +151,7 @@ struct DS_ScreenQuadConstantBuffer {
     float SQ_ShadowStrength;
     float SQ_ShadowAOStrength;
     float SQ_WorldAOStrength;
-    float SQ_RayTracingFlags;
+    float SQ_Pad;
 };
 
 struct CloudConstantBuffer {

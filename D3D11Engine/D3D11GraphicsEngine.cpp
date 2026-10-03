@@ -21,8 +21,6 @@
 #include "GSky.h"
 #include "RenderToTextureBuffer.h"
 #include "HDRDisplayCalibration.h"
-#include "D3D12RayTracing.h"
-#include "RayTracingScene.h"
 #include "zCParticleFX.h"
 #include "zCDecal.h"
 #include "zCMaterial.h"
@@ -39,7 +37,6 @@
 #include <locale>
 #include <codecvt>
 #include <cmath>
-#include <new>
 #include <wrl\client.h>
 #include "D3D11_Helpers.h"
 
@@ -142,8 +139,6 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
 }
 
 D3D11GraphicsEngine::~D3D11GraphicsEngine() {
-    RayTracingBackend.reset();
-    RayTracingScene.reset();
     GothicDepthBufferStateInfo::DeleteCachedObjects();
     GothicBlendStateInfo::DeleteCachedObjects();
     GothicRasterizerStateInfo::DeleteCachedObjects();
@@ -5736,8 +5731,6 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
 
     plcb.PL_ViewportSize = float2( static_cast<float>(Resolution.x), static_cast<float>(Resolution.y) );
 
-    const unsigned int rayTracingFlags = RenderRayTracingFrame();
-
     GBuffer0_Diffuse->BindToPixelShader( GetContext().Get(), 0 );
     GBuffer1_Normals->BindToPixelShader( GetContext().Get(), 1 );
     GBuffer2_SpecIntens_SpecPower->BindToPixelShader( GetContext().Get(), 7 );
@@ -5879,7 +5872,6 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
     ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
 
     DS_ScreenQuadConstantBuffer scb = {};
-    scb.SQ_RayTracingFlags = static_cast<float>(rayTracingFlags);
     scb.SQ_InvProj = plcb.PL_InvProj;
     scb.SQ_InvView = plcb.PL_InvView;
     scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
@@ -5947,111 +5939,16 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
 
     DistortionTexture->BindToPixelShader( 6 );
 
-    ID3D11ShaderResourceView* rayTracingViews[] = {
-        rayTracingFlags ? RayTracingBackend->GetSunShadowSRV() : nullptr,
-        rayTracingFlags ? RayTracingBackend->GetReflectionSRV() : nullptr };
-    GetContext()->PSSetShaderResources( 8, 2, rayTracingViews );
-
     PfxRenderer->DrawFullScreenQuad();
 
     // Reset state
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
     GetContext()->PSSetShaderResources( 2, 1, srv.GetAddressOf() );
     GetContext()->PSSetShaderResources( 7, 1, srv.GetAddressOf() );
-    ID3D11ShaderResourceView* noRayTracing[] = { nullptr, nullptr };
-    GetContext()->PSSetShaderResources( 8, 2, noRayTracing );
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
     return XR_SUCCESS;
-}
-
-unsigned int D3D11GraphicsEngine::RenderRayTracingFrame() {
-    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    if ( !settings.RayTracingShadows && !settings.RayTracingReflections ) {
-        RayTracingScene.reset();
-        RayTracingBackend.reset();
-        RayTracingLastStatus.clear();
-        RayTracingUnavailable = false; // Turning both options off allows a deliberate retry.
-        return 0;
-    }
-    if ( RayTracingUnavailable ) return 0;
-    try {
-        const auto& atmosphere = Engine::GAPI->GetSky()->GetAtmosphereCB();
-        const bool outdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
-        const bool traceShadows = settings.RayTracingShadows && settings.EnableShadows && outdoor && atmosphere.AC_LightPos.y > 0;
-        if ( !traceShadows && !settings.RayTracingReflections ) return 0;
-        if ( !RayTracingBackend ) {
-            RayTracingBackend = std::make_unique<gd3d11rt::D3D12RayTracing>();
-            if ( !RayTracingBackend->Initialize( GetDevice().Get(), GetContext().Get(), DXGIAdapter2.Get() ) ) {
-                RayTracingUnavailable = true;
-                LogWarn() << "Ray tracing unavailable: " << RayTracingBackend->GetStatus();
-                RayTracingBackend.reset();
-                return 0;
-            }
-            RayTracingScene = std::make_unique<gd3d11rt::SceneAdapter>();
-            LogInfo() << "Ray tracing: " << RayTracingBackend->GetStatus();
-        }
-        gd3d11rt::Frame frame;
-        frame.Depth = DepthStencilBufferCopy->GetTexture().Get();
-        frame.Normals = GBuffer1_Normals->GetTexture().Get();
-        frame.Specular = GBuffer2_SpecIntens_SpecPower->GetTexture().Get();
-        frame.Diffuse = GBuffer0_Diffuse->GetTexture().Get();
-        frame.EnvironmentCube = ReflectionCube2.Get();
-        XMFLOAT4X4 inverseProjection, inverseView;
-        // The deferred shader's column-major packing transposes Gothic's matrices.
-        // The RT constants are explicitly row-major, so supply that same transpose.
-        XMStoreFloat4x4( &inverseProjection, XMMatrixTranspose( XMMatrixInverse( nullptr,
-            XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) ) );
-        XMStoreFloat4x4( &inverseView, XMMatrixTranspose( XMMatrixInverse( nullptr,
-            XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) ) );
-        memcpy( frame.InverseProjection, &inverseProjection, sizeof( inverseProjection ) );
-        memcpy( frame.InverseView, &inverseView, sizeof( inverseView ) );
-        const XMFLOAT3 camera = Engine::GAPI->GetCameraPosition();
-        frame.Camera[0] = camera.x; frame.Camera[1] = camera.y; frame.Camera[2] = camera.z;
-        frame.SunDirection[0] = atmosphere.AC_LightPos.x;
-        frame.SunDirection[1] = atmosphere.AC_LightPos.y;
-        frame.SunDirection[2] = atmosphere.AC_LightPos.z;
-        frame.SunColor[0] = settings.SunLightColor.x;
-        frame.SunColor[1] = settings.SunLightColor.y;
-        frame.SunColor[2] = settings.SunLightColor.z;
-        frame.SunStrength = outdoor && atmosphere.AC_LightPos.y > 0 ? Toolbox::lerp(
-            settings.SunLightStrength, settings.RainSunLightStrength,
-            (std::min)( 1.0f, Engine::GAPI->GetRainFXWeight() * 2.0f ) ) : 0.0f;
-        frame.MaxDistance = settings.SectionDrawRadius * WORLD_SECTION_SIZE;
-        frame.ResolutionDivisor = 1;
-        frame.Shadows = traceShadows && frame.SunStrength > 0;
-        frame.Reflections = settings.RayTracingReflections;
-        if ( !frame.Shadows && !frame.Reflections ) return 0;
-        const auto& scene = RayTracingScene->Capture( *Engine::GAPI );
-        if ( scene.Valid && scene.Instances.empty() ) {
-            Engine::GAPI->ResetRenderStates();
-            return 0; // Wait for asynchronously loaded cutout materials.
-        }
-        const bool rendered = RayTracingBackend->Render( scene, frame );
-        Engine::GAPI->ResetRenderStates();
-        if ( RayTracingLastStatus != RayTracingBackend->GetStatus() ) {
-            RayTracingLastStatus = RayTracingBackend->GetStatus();
-            LogInfo() << "Ray tracing: " << RayTracingLastStatus;
-        }
-        if ( !rendered ) {
-            // A failed large scene must not be rebuilt and fail again every frame.
-            RayTracingUnavailable = true;
-            RayTracingScene.reset();
-            RayTracingBackend.reset();
-            return 0;
-        }
-        return rendered ? (frame.Shadows ? 1u : 0u) | (frame.Reflections ? 2u : 0u) : 0;
-    } catch ( const std::bad_alloc& ) {
-        // Gothic is a 32-bit process. An optional scene snapshot must not crash
-        // the game when a large mod leaves too little address space available.
-        RayTracingUnavailable = true;
-        RayTracingScene.reset();
-        RayTracingBackend.reset();
-        Engine::GAPI->ResetRenderStates();
-        LogWarn() << "Ray tracing disabled: insufficient process address space.";
-        return 0;
-    }
 }
 
 /** Renders the shadowmaps for a pointlight */

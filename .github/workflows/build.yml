@@ -79,11 +79,6 @@ jobs:
           pattern: binary-*
           path: binaries
 
-      - name: Restore ray tracing shader compiler
-        run: |
-          nuget install Microsoft.Direct3D.DXC -Version 1.8.2502.7 -OutputDirectory packages -NonInteractive
-          if ($LASTEXITCODE -ne 0) { throw "DXC restore failed: $LASTEXITCODE" }
-
       - name: Create distributions and checksums
         run: |
           $ErrorActionPreference = 'Stop'
@@ -93,11 +88,6 @@ jobs:
           function New-Distribution([string]$name, [bool]$spacer) {
             $dir = Join-Path $Env:RUNNER_TEMP $name
             New-Item -Path "$dir/GD3D11/shaders" -ItemType Directory -Force | Out-Null
-            New-Item -Path "$dir/GD3D11/Bin" -ItemType Directory -Force | Out-Null
-            $dxc = 'packages/Microsoft.Direct3D.DXC.1.8.2502.7'
-            Copy-Item "$dxc/build/native/bin/x86/dxcompiler.dll", "$dxc/build/native/bin/x86/dxil.dll" "$dir/GD3D11/Bin"
-            Copy-Item "$dxc/LICENSE-MS.txt" "$dir/GD3D11/Bin/LICENSE-DXC-MS.txt"
-            Copy-Item "$dxc/LICENSE-LLVM.txt" "$dir/GD3D11/Bin/LICENSE-DXC-LLVM.txt"
             Copy-Item 'D3D11Engine/Shaders/*' "$dir/GD3D11/shaders" -Recurse -Force
             Copy-Item 'blobs/Meshes', 'blobs/Textures' "$dir/GD3D11" -Recurse -Force
             Copy-Item 'blobs/libs/*' $dir -Recurse -Force
@@ -107,6 +97,7 @@ jobs:
               if (Test-Path 'blobs/data') { Copy-Item 'blobs/data' "$dir/GD3D11" -Recurse -Force }
               Copy-Item 'binaries/binary-Spacer_NET/ddraw.dll' "$dir/ddraw.dll"
             } else {
+              New-Item -Path "$dir/GD3D11/Bin" -ItemType Directory -Force | Out-Null
               $variants = @{
                 Release_AVX = 'g2a_avx2.dll'
                 Release = 'g2a.dll'
