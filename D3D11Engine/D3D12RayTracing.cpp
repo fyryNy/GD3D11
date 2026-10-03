@@ -269,7 +269,11 @@ struct D3D12RayTracing::Impl {
         description.MipLevels = 1;
         description.Format = format;
         description.SampleDesc.Count = 1;
-        description.Flags = flags | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+        // Render-target capability also makes VKD3D export a D3D11-compatible
+        // resource descriptor. DXVK cannot import its native D3D12 descriptor
+        // for SRV-only or UAV-only textures, even when their formats match.
+        description.Flags = flags | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS |
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         const auto heap = HeapProperties( D3D12_HEAP_TYPE_DEFAULT );
         SharedTexture created;
         HRESULT hr = Device->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_SHARED, &description,
@@ -531,8 +535,13 @@ struct D3D12RayTracing::Impl {
         auto create = reinterpret_cast<CreateDevice>( GetProcAddress( D3D12Module.Value, "D3D12CreateDevice" ) );
         SerializeRoot = reinterpret_cast<SerializeSignature>( GetProcAddress( D3D12Module.Value, "D3D12SerializeRootSignature" ) );
         if ( !create || !SerializeRoot ) return Error( "Direct3D 12 is unavailable", E_NOINTERFACE );
-        hr = create( adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(Device.GetAddressOf()) );
+        // Separate an incompatible DXGI/D3D12 runtime from a runtime that can
+        // create this adapter's device but lacks the ray tracing interface.
+        ComPtr<ID3D12Device> baseDevice;
+        hr = create( adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(baseDevice.GetAddressOf()) );
         if ( FAILED( hr ) ) return Error( "Could not create a Direct3D 12 device on the renderer's GPU", hr );
+        hr = baseDevice.As( &Device );
+        if ( FAILED( hr ) ) return Error( "The Direct3D 12 runtime does not expose ray tracing device interfaces", hr );
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 options = {};
         hr = Device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options) );
         if ( FAILED( hr ) || options.RaytracingTier < D3D12_RAYTRACING_TIER_1_1 )

@@ -31,7 +31,7 @@ The new renderer is able to utilize more of the current GPU generation's power. 
 
 ### Experimental ray tracing
 
-On Windows with DXR 1.1 hardware, Ctrl+F11 exposes optional **Sun shadows** and
+With a runtime exposing DXR 1.1, Ctrl+F11 exposes optional **Sun shadows** and
 **Reflections** under **Ray tracing**. Both default to disabled. These effects use
 a Direct3D 12 ray-tracing pass alongside the Direct3D 11 renderer and require a
 rebuilt renderer DLL. Releases include the 32-bit DXC compiler and validator in
@@ -43,6 +43,16 @@ for animated characters. Reflections cover opaque specular surfaces; animated
 characters, shader-only foliage wind, water reflections, and bounced global
 illumination are not included. Unsupported hardware or resource limits fall back
 to the existing rendering path and report the reason in the renderer log.
+
+Gothic runs as a 32-bit process, so the graphics driver must expose ray tracing
+to that process. Some Vulkan drivers expose ray tracing only to 64-bit code
+([Vulkan ray tracing guide](https://docs.vulkan.org/guide/latest/extensions/ray_tracing.html)).
+On Linux, hardware ray tracing was verified on an RTX 3090 with matching DXVK
+and vkd3d-proton libraries under Proton's WoW64 mode (`WINEARCH=wow64`), which
+uses the 64-bit Vulkan driver for the 32-bit game. Use a separate game prefix
+with the native `d3d11`, `dxgi`, `d3d12`, and `d3d12core` libraries. Mixing DXVK
+with Wine's built-in D3D12 can fail before ray tracing initializes. Native
+Windows driver support for this 32-bit path requires separate verification.
 
 > **Note**: If you have problems with launching game after installing GD3D11 - for example getting Access Denied(0x45a), reinstall your Visual C++ Redistributable for Visual Studio 2015-2022 to latest version from Microsoft page, mod stopped working on older VCR due to some Microsoft changes in Platform Toolset.
 
