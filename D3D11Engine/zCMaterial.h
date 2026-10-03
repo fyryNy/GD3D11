@@ -19,6 +19,8 @@ const int zMAT_ALPHA_FUNC_MUL2 = 6;
 const int zMAT_ALPHA_FUNC_TEST = 7;
 const int zMAT_ALPHA_FUNC_BLEND_TEST = 8;
 
+class zCBspSector;
+
 class zCTexAniCtrl {
 private:
     int	AniChannel;
@@ -30,6 +32,14 @@ private:
 
 class zCMaterial {
 public:
+    zCBspSector* GetBspSectorFront() const {
+        return *reinterpret_cast<zCBspSector* const*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_BspSectorFront ));
+    }
+
+    zCBspSector* GetBspSectorBack() const {
+        return *reinterpret_cast<zCBspSector* const*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_BspSectorBack ));
+    }
+
     /** Hooks the functions of this Class */
     static void Hook() {
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCMaterialDestructor), Hooked_Destructor );

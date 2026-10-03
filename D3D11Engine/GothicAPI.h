@@ -5,6 +5,7 @@
 #include "zCTree.h"
 #include "zCPolyStrip.h"
 #include "zTypes.h"
+#include "PortalVisibility.h"
 
 #define START_TIMING Engine::GAPI->GetRendererState().RendererInfo.Timing.Start
 #define STOP_TIMING Engine::GAPI->GetRendererState().RendererInfo.Timing.Stop
@@ -14,6 +15,7 @@ const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
 
 class zCFlash;
 class zCBspBase;
+class zCBspSector;
 class zCModelPrototype;
 struct ScreenSpaceLine;
 struct LineVertex;
@@ -492,6 +494,10 @@ public:
     /** Collects vobs using gothics BSP-Tree */
     void CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs );
 
+    /** Native room ownership and visible portals constrain static world vobs. */
+    bool IsVobVisibleInPortalRoom( zCVob* vob ) const;
+    bool HasRoomPortalVisibilityData() const;
+
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
 
@@ -712,6 +718,9 @@ public:
     float GetSkyTimeScale();
 
 private:
+    void BuildRoomPortalVisibility( zCBspTree* tree );
+    void UpdateRoomPortalVisibility();
+
     /** Collects polygons in the given AABB */
     void CollectPolygonsInAABBRec( BspInfo* base, const zTBBox3D& bbox, std::vector<zCPolygon*>& list );
 
@@ -880,4 +889,8 @@ private:
 
     /** Last wetness update; kept per API instance and reset on world load. */
     DWORD SceneWetnessLastUpdateMs;
+
+    PortalVisibility RoomPortalVisibility;
+    std::unordered_map<zCBspSector*, size_t> RoomPortalSectorIDs;
+    bool RoomPortalVisibilityReady = false;
 };

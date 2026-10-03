@@ -18,6 +18,7 @@ class zCVob;
 class zCBspLeaf;
 class zCBspNode;
 class zCBspBase;
+class zCBspSector;
 
 enum zTBspNodeType {
     zBSP_LEAF = 1,
@@ -208,9 +209,31 @@ public:
     short					sectorIndex;			// sector this leaf was activated by
 };
 
+class zCBspSector {
+public:
+    const zCArray<zCPolygon*>* GetPortals() const {
+        // The portal array follows the sector name, node array and sector index in all supported engines.
+        return reinterpret_cast<const zCArray<zCPolygon*>*>(THISPTR_OFFSET( 0x24 ));
+    }
+};
+
 /** BspTree-Object which holds the world */
 class zCBspTree {
 public:
+    const zCArray<zCBspSector*>* GetSectors() const {
+        return reinterpret_cast<const zCArray<zCBspSector*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCBspTree::Offset_SectorList ));
+    }
+
+    const zCArray<zCPolygon*>* GetPortals() const {
+        return reinterpret_cast<const zCArray<zCPolygon*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCBspTree::Offset_PortalList ));
+    }
+
+    int TraceRay( const XMFLOAT3& start, const XMFLOAT3& end, int flags, XMFLOAT3& hitPosition, zCPolygon*& hitPolygon ) const {
+        // The native BSP trace uses an end position rather than a direction. A null vob list limits it to world polygons.
+        using TraceRayFunction = int( __thiscall* )( const zCBspTree*, const XMFLOAT3&, const XMFLOAT3&, int, XMFLOAT3&, zCPolygon*&, zCArray<zCVob*>* );
+        return reinterpret_cast<TraceRayFunction>( GothicMemoryLocations::zCBspTree::TraceRay )( this, start, end, flags, hitPosition, hitPolygon, nullptr );
+    }
+
     /** Hooks the functions of this Class */
     static void Hook() {
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspTreeLoadBIN), hooked_LoadBIN );

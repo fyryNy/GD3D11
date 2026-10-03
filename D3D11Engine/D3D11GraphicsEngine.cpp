@@ -4867,11 +4867,19 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     static std::vector<VobLightInfo*> lights;
     static std::vector<SkeletalVobInfo*> mobs;
 
+    // Portal visibility follows the camera even while the debug frustum is frozen.
+    const bool freezeVisibility = Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum &&
+        !Engine::GAPI->HasRoomPortalVisibilityData();
+
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ||
         Engine::GAPI->GetRendererState().RendererSettings.EnableDynamicLighting ) {
-        if ( !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ||
-            (Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum &&
-                vobs.empty()) ) {
+        if ( !freezeVisibility || vobs.empty() ) {
+            vobs.clear();
+            lights.clear();
+            mobs.clear();
+            for ( const auto& visual : staticMeshVisuals ) {
+                visual.second->StartNewFrame();
+            }
             Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
         }
     }
@@ -4911,6 +4919,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             reinterpret_cast<void**>(&data), &size );
         for ( auto const& staticMeshVisual : staticMeshVisuals ) {
             staticMeshVisual.second->StartInstanceNum = loc;
+            if ( staticMeshVisual.second->Instances.empty() ) continue;
             memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
                 sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
             loc += staticMeshVisual.second->Instances.size();
@@ -5061,8 +5070,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             }
 
             // Reset visual
-            if ( doReset &&
-                !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {
+            if ( doReset && !freezeVisibility ) {
                 staticMeshVisual.second->StartNewFrame();
             }
         }
@@ -5188,7 +5196,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         vi->StartNewFrame();
     }
 
-    if ( !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {
+    if ( !freezeVisibility ) {
         lights.clear();
         vobs.clear();
         mobs.clear();

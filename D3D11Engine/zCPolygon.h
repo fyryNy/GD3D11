@@ -111,6 +111,10 @@ public:
         return reinterpret_cast<PolyFlags*>(THISPTR_OFFSET( GothicMemoryLocations::zCPolygon::Offset_PolyFlags ));
     }
 
+    zTPlane GetPlane() const {
+        return *reinterpret_cast<const zTPlane*>(THISPTR_OFFSET( GothicMemoryLocations::zCPolygon::Offset_Plane ));
+    }
+
     zCMaterial* GetMaterial() const {
         return *reinterpret_cast<zCMaterial**>(THISPTR_OFFSET( GothicMemoryLocations::zCPolygon::Offset_Material ));
     }

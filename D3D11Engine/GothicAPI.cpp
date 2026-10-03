@@ -551,6 +551,10 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 
 /** Resets the object, like at level load */
 void GothicAPI::ResetWorld() {
+    RoomPortalVisibility.Reset();
+    RoomPortalSectorIDs.clear();
+    RoomPortalVisibilityReady = false;
+
     WorldSections.clear();
 
     ResetVobs();
@@ -663,6 +667,7 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
         WorldConverter::ConvertWorldMesh( &polys[0], polys.size(), &WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh, indoorLocation );
     }
 #endif
+    BuildRoomPortalVisibility( tree );
     LogInfo() << "Done extracting world!";
 }
 
@@ -711,6 +716,7 @@ void GothicAPI::OnWorldLoaded() {
     }
 
     LoadedWorldInfo->BspTree = oCGame::GetGame()->_zCSession_world->GetBspTree();
+    BuildRoomPortalVisibility( LoadedWorldInfo->BspTree );
 
     // Get all VOBs
     zCTree<zCVob>* vobTree = oCGame::GetGame()->_zCSession_world->GetGlobalVobTree();
@@ -3500,6 +3506,179 @@ void GothicAPI::DebugDrawBSPTree() {
     DebugDrawTreeNode( root, root->BBox3D );
 }
 
+/** Copies immutable native room and portal geometry without running Gothic's render pass. */
+void GothicAPI::BuildRoomPortalVisibility( zCBspTree* tree ) {
+    RoomPortalVisibility.Reset();
+    RoomPortalSectorIDs.clear();
+    RoomPortalVisibilityReady = false;
+
+    if ( !tree || !LoadedWorldInfo || LoadedWorldInfo->CustomWorldLoaded ) {
+        return;
+    }
+    // Separate indoor BSP worlds locate the camera through polygon sector indices,
+    // including paired portals. The outdoor material-ownership rule does not apply.
+    if ( tree->GetBspTreeMode() != zBSP_MODE_OUTDOOR ) {
+        return;
+    }
+
+    const auto* sectors = tree->GetSectors();
+    if ( !sectors || sectors->NumInArray <= 0 || !sectors->Array ) {
+        return;
+    }
+
+    for ( int i = 0; i < sectors->NumInArray; ++i ) {
+        zCBspSector* sector = sectors->Array[i];
+        if ( sector && RoomPortalSectorIDs.find( sector ) == RoomPortalSectorIDs.end() ) {
+            RoomPortalSectorIDs.emplace( sector, RoomPortalSectorIDs.size() + 1 );
+        }
+    }
+
+    auto sectorID = [&]( zCBspSector* sector, size_t& id ) {
+        if ( !sector ) {
+            id = 0; // A null native sector denotes the outdoor world.
+            return true;
+        }
+        const auto found = RoomPortalSectorIDs.find( sector );
+        if ( found == RoomPortalSectorIDs.end() ) {
+            return false;
+        }
+        id = found->second;
+        return true;
+    };
+
+    std::vector<zCPolygon*> nativePortals;
+    std::unordered_set<zCPolygon*> seen;
+    auto collectPortals = [&]( const zCArray<zCPolygon*>* list ) {
+        if ( !list || list->NumInArray <= 0 ) {
+            return true;
+        }
+        if ( !list->Array ) {
+            return false;
+        }
+        for ( int i = 0; i < list->NumInArray; ++i ) {
+            zCPolygon* polygon = list->Array[i];
+            if ( polygon && seen.insert( polygon ).second ) {
+                nativePortals.push_back( polygon );
+            }
+        }
+        return true;
+    };
+
+    if ( !collectPortals( tree->GetPortals() ) ) {
+        return;
+    }
+    for ( const auto& sector : RoomPortalSectorIDs ) {
+        if ( !collectPortals( sector.first->GetPortals() ) ) {
+            return;
+        }
+    }
+
+    std::vector<PortalVisibility::Portal> portals;
+    portals.reserve( nativePortals.size() );
+    for ( zCPolygon* polygon : nativePortals ) {
+        if ( !polygon->GetPolyFlags()->PortalPoly ) {
+            continue;
+        }
+        zCMaterial* material = polygon->GetMaterial();
+        const unsigned int vertexCount = polygon->GetNumPolyVertices();
+        if ( !material || vertexCount < 3 || !polygon->getVertices() ) {
+            return; // Incomplete metadata cannot safely reject room vobs.
+        }
+
+        PortalVisibility::Portal portal;
+        if ( !sectorID( material->GetBspSectorFront(), portal.from ) ||
+            !sectorID( material->GetBspSectorBack(), portal.to ) ) {
+            return;
+        }
+        if ( portal.from == portal.to ) {
+            continue;
+        }
+        // Outdoor ghost occluders participate in native occlusion, not room activation.
+        if ( portal.from == 0 && polygon->GetPolyFlags()->GhostOccluder ) {
+            continue;
+        }
+
+        const zTPlane plane = polygon->GetPlane();
+        portal.normal = { plane.Normal.x, plane.Normal.y, plane.Normal.z };
+        portal.distance = plane.Distance;
+        for ( unsigned int i = 0; i < vertexCount; ++i ) {
+            const zCVertex* vertex = polygon->getVertices()[i];
+            if ( !vertex ) {
+                return;
+            }
+            portal.vertices.push_back( { vertex->Position.x, vertex->Position.y, vertex->Position.z } );
+        }
+        // Native portal lists already contain the opposite faces with reversed ownership.
+        portals.push_back( std::move( portal ) );
+    }
+
+    RoomPortalVisibility.Configure( RoomPortalSectorIDs.size() + 1, std::move( portals ) );
+}
+
+bool GothicAPI::HasRoomPortalVisibilityData() const {
+    return RoomPortalVisibility.HasData() && LoadedWorldInfo && !LoadedWorldInfo->CustomWorldLoaded;
+}
+
+void GothicAPI::UpdateRoomPortalVisibility() {
+    RoomPortalVisibilityReady = false;
+    if ( !HasRoomPortalVisibilityData() || CameraReplacementPtr || !zCCamera::GetCamera() ) {
+        return;
+    }
+
+    const XMFLOAT3 cameraPosition = GetCameraPosition();
+    const XMFLOAT3 traceEnd( cameraPosition.x, cameraPosition.y - 50000.0f, cameraPosition.z );
+    XMFLOAT3 hitPosition;
+    zCPolygon* hitPolygon = nullptr;
+    if ( !LoadedWorldInfo->BspTree->TraceRay( cameraPosition, traceEnd, 0x60, hitPosition, hitPolygon ) || !hitPolygon ) {
+        return;
+    }
+
+    size_t cameraSector = 0;
+    const PolyFlags* flags = hitPolygon->GetPolyFlags();
+    if ( flags->SectorPoly ) {
+        const zCMaterial* material = hitPolygon->GetMaterial();
+        if ( !material ) {
+            return;
+        }
+        zCBspSector* sector = material->GetBspSectorFront();
+        if ( !flags->PortalPoly || sector ) {
+            if ( sector ) {
+                const auto found = RoomPortalSectorIDs.find( sector );
+                if ( found == RoomPortalSectorIDs.end() ) {
+                    return;
+                }
+                cameraSector = found->second;
+            }
+        }
+    }
+
+    XMFLOAT4X4 viewProjection;
+    XMStoreFloat4x4( &viewProjection,
+        XMMatrixTranspose( XMMatrixMultiply( XMLoadFloat4x4( &GetProjectionMatrix() ), GetViewMatrixXM() ) ) );
+    PortalVisibility::Matrix matrix;
+    memcpy( matrix.m, &viewProjection, sizeof( matrix.m ) );
+    RoomPortalVisibility.Update( matrix, { cameraPosition.x, cameraPosition.y, cameraPosition.z }, cameraSector );
+    RoomPortalVisibilityReady = true;
+}
+
+bool GothicAPI::IsVobVisibleInPortalRoom( zCVob* vob ) const {
+    if ( !RoomPortalVisibilityReady || CameraReplacementPtr || !vob || vob->GetHomeWorld() != LoadedWorldInfo->MainWorld ) {
+        return true;
+    }
+
+    const zCPolygon* groundPolygon = vob->GetGroundPoly();
+    const zCMaterial* material = groundPolygon ? groundPolygon->GetMaterial() : nullptr;
+    zCBspSector* sector = material ? material->GetBspSectorFront() : nullptr;
+    const auto found = RoomPortalSectorIDs.find( sector );
+    if ( !sector || found == RoomPortalSectorIDs.end() ) {
+        return true;
+    }
+
+    const zTBBox3D box = vob->GetBBox();
+    return RoomPortalVisibility.IsVisible( found->second,
+        { box.Min.x, box.Min.y, box.Min.z }, { box.Max.x, box.Max.y, box.Max.z } );
+}
+
 /** Collects vobs using gothics BSP-Tree */
 void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs ) {
     zCBspTree* tree = LoadedWorldInfo->BspTree;
@@ -3509,6 +3688,8 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
     if ( zCCamera::GetCamera() ) {
         zCCamera::GetCamera()->Activate();
     }
+
+    UpdateRoomPortalVisibility();
 
     // Recursively go through the tree and draw all nodes
     CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D, 63, vobs, lights, mobs );
@@ -3537,6 +3718,10 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
                 }
 #endif
                 if ( !it->Vob->GetShowVisual() ) {
+                    continue;
+                }
+
+                if ( !IsVobVisibleInPortalRoom( it->Vob ) ) {
                     continue;
                 }
 
@@ -3740,6 +3925,10 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
             float vd;
             XMStoreFloat( &vd, XMVector3Length( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
             if ( vd < dist && it->Vob->GetShowVisual() ) {
+                if ( !Engine::GAPI->IsVobVisibleInPortalRoom( it->Vob ) ) {
+                    continue;
+                }
+
                 if ( it->Vob->GetVisualAlpha() ) {
                     Engine::GAPI->TransparencyVobs.emplace_back( vd, it->Vob->GetVobTransparency(), nullptr, it );
                     std::push_heap( Engine::GAPI->TransparencyVobs.begin(), Engine::GAPI->TransparencyVobs.end(), CompareGhostDistance );
