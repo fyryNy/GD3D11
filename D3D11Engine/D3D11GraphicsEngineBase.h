@@ -132,6 +132,9 @@ public:
     HWND GetOutputWindow() { return OutputWindow; }
 
 protected:
+    /** Reports failed graphics calls, including the actual device removal reason. */
+    XRESULT CheckGraphicsResult( HRESULT result, const char* operation );
+
     /** Updates the transformsCB with new values from the GAPI */
     void UpdateTransformsCB();
 

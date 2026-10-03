@@ -811,7 +811,10 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
     const INT2 selectedResolution = d->Resolutions.empty() ? currentResolution :
         INT2( d->Resolutions[d->ResolutionSetting].Width, d->Resolutions[d->ResolutionSetting].Height );
     const bool modeChanged = d->CurrentWindowMode != d->ActiveWindowMode;
-    if ( modeChanged && engine->RequestWindowMode( d->CurrentWindowMode, selectedResolution ) ) {
+    const bool resolutionChanged = selectedResolution.x != currentResolution.x
+        || selectedResolution.y != currentResolution.y;
+    if ( (modeChanged || resolutionChanged)
+        && engine->RequestWindowMode( d->CurrentWindowMode, selectedResolution ) ) {
         d->ActiveWindowMode = d->CurrentWindowMode;
     }
 
@@ -820,16 +823,7 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
         Engine::GraphicsEngine->ReloadShaders();
     }
 
-	// Check for resolution change
-    // A mode request also carries the selected resolution and runs after this callback.
-	if ( !modeChanged && (selectedResolution.x != currentResolution.x || selectedResolution.y != currentResolution.y) ) {
-		engine->OnResize( selectedResolution );
-        // reposition the window at the center, 
-        // or we might not be able to see it 
-        if ( d->MainView->GetRenderTarget() ) {
-            d->SetPositionCentered( D2D1::Point2F( d->MainView->GetRenderTarget()->GetSize().width / 2, d->MainView->GetRenderTarget()->GetSize().height / 2 ), D2D1::SizeF( UI_WIN_SIZE_X, UI_WIN_SIZE_Y ) );
-        }
-	}
+	// Display changes are applied and the dialog is recentered at the next frame boundary.
 	Engine::GAPI->SaveRendererWorldSettings( settings );
 	Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
 }

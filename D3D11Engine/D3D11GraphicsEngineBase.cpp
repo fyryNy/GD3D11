@@ -107,46 +107,55 @@ XRESULT D3D11GraphicsEngineBase::Present() {
     Engine::AntTweakBar->Draw();
 
     bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
-    if ( SwapChain->Present( vsync ? 1 : 0, 0 ) == DXGI_ERROR_DEVICE_REMOVED ) {
-        switch ( GetDevice()->GetDeviceRemovedReason() ) {
-        case DXGI_ERROR_DEVICE_HUNG:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_HUNG)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_DEVICE_REMOVED:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_REMOVED)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_DEVICE_RESET:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_RESET)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DRIVER_INTERNAL_ERROR)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_INVALID_CALL:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_INVALID_CALL)";
-            exit( 0 );
-            break;
-
-        case S_OK:
-            LogInfo() << "Device removed, but we're fine!";
-            break;
-
-        default:
-            LogWarnBox() << "Device Removed! (Unknown reason)";
-        }
-    }
+    const HRESULT hr = SwapChain->Present( vsync ? 1 : 0, 0 );
 
     // We did our present, set the next frame ready
     PresentPending = false;
 
-    return XR_SUCCESS;
+    return CheckGraphicsResult( hr, "Present" );
+}
+
+XRESULT D3D11GraphicsEngineBase::CheckGraphicsResult( HRESULT result, const char* operation ) {
+    // Positive DXGI statuses (such as an occluded window) are not device loss.
+    if ( SUCCEEDED( result ) ) return XR_SUCCESS;
+
+    const HRESULT reason = Device ? Device->GetDeviceRemovedReason() : S_OK;
+    LogError() << operation << " failed: HRESULT=0x" << std::hex << static_cast<unsigned long>(result)
+        << ", GetDeviceRemovedReason=0x" << static_cast<unsigned long>(reason);
+    LogError() << "Graphics state: GPU=" << DeviceDescription << ", render resolution=" << Resolution.toString()
+        << ", minimized=" << (OutputWindow && IsIconic( OutputWindow ))
+        << ", foreground=" << (OutputWindow && GetForegroundWindow() == OutputWindow);
+
+    if ( SwapChain ) {
+        DXGI_SWAP_CHAIN_DESC1 desc = {};
+        if ( SUCCEEDED( SwapChain->GetDesc1( &desc ) ) ) {
+            LogError() << "Swapchain: " << desc.Width << "x" << desc.Height << ", format=" << desc.Format
+                << ", buffers=" << desc.BufferCount << ", effect=" << desc.SwapEffect
+                << ", flags=0x" << std::hex << desc.Flags;
+        }
+        BOOL exclusive = FALSE;
+        const HRESULT stateResult = SwapChain->GetFullscreenState( &exclusive, nullptr );
+        LogError() << "Fullscreen state: exclusive=" << exclusive << ", HRESULT=0x"
+            << std::hex << static_cast<unsigned long>(stateResult);
+    }
+
+    // A failed operation with S_OK here does not invalidate the virtual device.
+    // A genuinely lost device cannot reuse any of its existing GPU resources.
+    if ( FAILED( reason ) ) {
+        const char* name = "Unknown device error";
+        switch ( reason ) {
+        case DXGI_ERROR_DEVICE_HUNG: name = "DXGI_ERROR_DEVICE_HUNG"; break;
+        case DXGI_ERROR_DEVICE_REMOVED: name = "DXGI_ERROR_DEVICE_REMOVED"; break;
+        case DXGI_ERROR_DEVICE_RESET: name = "DXGI_ERROR_DEVICE_RESET"; break;
+        case DXGI_ERROR_DRIVER_INTERNAL_ERROR: name = "DXGI_ERROR_DRIVER_INTERNAL_ERROR"; break;
+        case DXGI_ERROR_INVALID_CALL: name = "DXGI_ERROR_INVALID_CALL"; break;
+        }
+        LogErrorBox() << "Graphics device lost during " << operation << " (" << name << ", 0x"
+            << std::hex << static_cast<unsigned long>(reason) << ").\n"
+            << "See System/Log.txt for details. The game must be restarted.";
+        exit( 1 );
+    }
+    return XR_FAILED;
 }
 
 /** Called when we started to render the world */

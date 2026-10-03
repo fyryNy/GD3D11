@@ -11,6 +11,7 @@
 #include "D3D11PShader.h"
 #include <d3dcompiler.h>
 #include <DDSTextureLoader.h>
+#include <sstream>
 
 D3D11PFX_SMAA::D3D11PFX_SMAA( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( rnd ) {
 	EdgesTex = nullptr;
@@ -39,19 +40,27 @@ HRESULT D3DX11CreateEffectFromFile_RES(
 
 	HRESULT hr = D3DX11CompileEffectFromFile( Toolbox::ToWideChar( pFileName ).c_str(), pDefines, D3D_COMPILE_STANDARD_FILE_INCLUDE, HLSLFlags, FXFlags, pDevice.Get(), ppEffect, ErrorsBuffer.GetAddressOf() );
 
-	char* Errors;
 	if ( ErrorsBuffer.Get() ) {
-		Errors = reinterpret_cast<char*>(ErrorsBuffer->GetBufferPointer());
+		const char* Errors = reinterpret_cast<const char*>(ErrorsBuffer->GetBufferPointer());
 		if ( SUCCEEDED( hr ) ) {
-			LogWarn() << Errors;
+			std::istringstream diagnostics( Errors );
+			std::string message;
+			while ( std::getline( diagnostics, message ) ) {
+				if ( !message.empty() && message.back() == '\r' ) {
+					message.pop_back();
+				}
+				if ( message == "warning X4717: Effects deprecated for D3DCompiler_47" ) {
+					LogInfo() << message;
+				} else if ( !message.empty() ) {
+					LogWarn() << message;
+				}
+			}
 		} else {
 			LogError() << Errors;
 		}
-
-		return hr;
 	}
 
-	return S_OK;
+	return hr;
 }
 
 /** Creates needed resources */

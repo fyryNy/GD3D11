@@ -105,10 +105,6 @@ public:
         BaseGraphicsEngine* engine = Engine::GraphicsEngine;
         // TODO: Make Option checkable
         // LogInfo() << "Reading Gothic-Config: " << var;
-        if ( !engine ) {
-            LogWarn() << "ENGINE wasn't initialized yet! WTF! - Reading Gothic-Config: " << var;
-        }
-
         static bool once = false;
         if ( !once ) {
             once = true;

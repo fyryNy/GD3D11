@@ -356,6 +356,14 @@ XRESULT D3D11GraphicsEngine::Init() {
     std::string deviceDescription( wDeviceDescription.begin(), wDeviceDescription.end() );
     DeviceDescription = deviceDescription;
     LogInfo() << "Rendering on: " << deviceDescription.c_str();
+    LogInfo() << "Adapter: vendor=0x" << std::hex << adpDesc.VendorId << ", device=0x" << adpDesc.DeviceId
+        << std::dec << ", dedicated VRAM=" << (adpDesc.DedicatedVideoMemory / (1024 * 1024)) << " MiB";
+    LARGE_INTEGER driverVersion = {};
+    if ( SUCCEEDED( DXGIAdapter2->CheckInterfaceSupport( __uuidof(IDXGIDevice), &driverVersion ) ) ) {
+        LogInfo() << "Graphics driver version: " << HIWORD( driverVersion.HighPart ) << "."
+            << LOWORD( driverVersion.HighPart ) << "." << HIWORD( driverVersion.LowPart ) << "."
+            << LOWORD( driverVersion.LowPart );
+    }
 
     bool dxvkAvailable = false;
     IUnknown* dxgiVKInterop = nullptr;
@@ -962,6 +970,9 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
     if ( !recreate && memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain.Get() )
         return XR_SUCCESS;  // Don't resize if we don't have to
 
+    LogInfo() << "Display change: mode=" << m_windowMode << ", resolution=" << newSize.toString()
+        << ", recreate swapchain=" << recreate;
+
     struct ResizeGuard {
         bool& active;
         ResizeGuard( bool& value ) : active( value ) { active = true; }
@@ -974,6 +985,7 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
         hr = SwapChain->GetFullscreenState( &exclusive, nullptr );
         if ( SUCCEEDED( hr ) && exclusive ) hr = SwapChain->SetFullscreenState( FALSE, nullptr );
         if ( hr != S_OK ) {
+            CheckGraphicsResult( hr, "Leaving exclusive fullscreen" );
             if ( exitFullscreenResult && BackbufferRTV ) *exitFullscreenResult = hr;
             return XR_FAILED;
         }
@@ -1006,7 +1018,11 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
         newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
         newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
         newMode.Format = m_HDRSwapChain ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
-        if ( SwapChain->ResizeTarget( &newMode ) != S_OK ) return XR_FAILED;
+        hr = SwapChain->ResizeTarget( &newMode );
+        if ( hr != S_OK ) {
+            CheckGraphicsResult( hr, "ResizeTarget" );
+            return XR_FAILED;
+        }
     } else if ( !ConfigureOutputWindow( bbres, monitor ) ) return XR_FAILED;
 #endif
 
@@ -1140,7 +1156,7 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
                 hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
             }
             if ( FAILED( hr ) ) {
-                LogError() << "Failed to create the requested swapchain: " << hr;
+                CheckGraphicsResult( hr, "CreateSwapChainForHwnd" );
                 return XR_FAILED;
             }
         }
@@ -1154,10 +1170,18 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
             newMode.Height = newSize.y;
             newMode.RefreshRate = CachedRefreshRate;
             newMode.Format = scd.Format;
-            if ( SwapChain->ResizeTarget( &newMode ) != S_OK
-                || SwapChain->SetFullscreenState( TRUE, nullptr ) != S_OK
-                || FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, scd.Format, scflags ) ) ) {
-                LogWarn() << "The requested exclusive display mode is unavailable.";
+            hr = SwapChain->ResizeTarget( &newMode );
+            if ( hr != S_OK ) {
+                CheckGraphicsResult( hr, "ResizeTarget for exclusive fullscreen" );
+                return XR_FAILED;
+            }
+            hr = SwapChain->SetFullscreenState( TRUE, nullptr );
+            if ( hr != S_OK ) {
+                CheckGraphicsResult( hr, "Entering exclusive fullscreen" );
+                return XR_FAILED;
+            }
+            hr = SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, scd.Format, scflags );
+            if ( XR_SUCCESS != CheckGraphicsResult( hr, "ResizeBuffers for exclusive fullscreen" ) ) {
                 return XR_FAILED;
             }
         }
@@ -1170,12 +1194,13 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
 
     } else {
         DXGI_SWAP_CHAIN_DESC1 currentDesc = {};
-        if ( FAILED( SwapChain->GetDesc1( &currentDesc ) ) ) return XR_FAILED;
+        hr = SwapChain->GetDesc1( &currentDesc );
+        if ( XR_SUCCESS != CheckGraphicsResult( hr, "GetDesc1 before resizing" ) ) return XR_FAILED;
         scflags = currentDesc.Flags; // Creation-only flags must survive ResizeBuffers unchanged.
         LogInfo() << "Resizing swapchain: " << (m_HDRSwapChain ? "FP16 scRGB" : "BGRA8 SDR");
-        if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y,
-            m_HDRSwapChain ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
-            LogError() << "Failed to resize swapchain!";
+        hr = SwapChain->ResizeBuffers( 0, bbres.x, bbres.y,
+            m_HDRSwapChain ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM, scflags );
+        if ( XR_SUCCESS != CheckGraphicsResult( hr, "ResizeBuffers" ) ) {
             return XR_FAILED;
         }
     }
@@ -1193,15 +1218,18 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
             || FAILED( swapChain3->SetColorSpace1( DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 ) ) ) {
             LogWarn() << "scRGB presentation unavailable; falling back to SDR.";
             m_HDRSwapChain = false;
-            if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) )
+            hr = SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags );
+            if ( XR_SUCCESS != CheckGraphicsResult( hr, "ResizeBuffers for SDR fallback" ) )
                 return XR_FAILED;
         }
     }
     UpdateColorSpace_SwapChain();
-    if ( FAILED( SwapChain->GetBuffer( 0, IID_PPV_ARGS( backbuffer.GetAddressOf() ) ) ) ) return XR_FAILED;
+    hr = SwapChain->GetBuffer( 0, IID_PPV_ARGS( backbuffer.GetAddressOf() ) );
+    if ( XR_SUCCESS != CheckGraphicsResult( hr, "GetBuffer" ) ) return XR_FAILED;
 
     // Recreate RenderTargetView
-    if ( FAILED( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) ) ) return XR_FAILED;
+    hr = GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() );
+    if ( XR_SUCCESS != CheckGraphicsResult( hr, "CreateRenderTargetView for backbuffer" ) ) return XR_FAILED;
 
     if ( m_HDRSwapChain ) {
         HDRUIBlack = std::make_unique<RenderToTextureBuffer>( GetDevice(), bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM );
@@ -1225,7 +1253,7 @@ XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESU
             if ( SUCCEEDED( hr ) ) hr = SwapChain->GetBuffer( 0, IID_PPV_ARGS( backbuffer.GetAddressOf() ) );
             if ( SUCCEEDED( hr ) ) hr = GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() );
             if ( FAILED( hr ) ) {
-                LogError() << "Failed to recover the SDR swapchain after HDR surface allocation failure.";
+                CheckGraphicsResult( hr, "Recovering SDR after HDR surface allocation failure" );
                 return XR_FAILED;
             }
             UpdateColorSpace_SwapChain();
@@ -1472,13 +1500,13 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
 /** Called when the game ended it's frame */
 XRESULT D3D11GraphicsEngine::OnEndFrame() {
-    Present();
+    const XRESULT result = Present();
 
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StopTotal();
     if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
         m_FrameLimiter->Wait();
     }
-    return XR_SUCCESS;
+    return result;
 }
 
 /** Called when the game wants to clear the bound rendertarget */
@@ -1736,54 +1764,27 @@ XRESULT D3D11GraphicsEngine::Present() {
 
     HRESULT hr;
     BOOL exclusive = FALSE;
-    SwapChain->GetFullscreenState( &exclusive, nullptr );
+    hr = SwapChain->GetFullscreenState( &exclusive, nullptr );
+    if ( FAILED( hr ) ) {
+        PresentPending = false;
+        return CheckGraphicsResult( hr, "GetFullscreenState before Present" );
+    }
     if ( m_flipWithTearing && !exclusive ) {
         hr = SwapChain->Present( vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING );
     } else {
         hr = SwapChain->Present( vsync ? 1 : 0, 0 );
     }
 
-    if ( hr == DXGI_ERROR_DEVICE_REMOVED ) {
-        switch ( GetDevice()->GetDeviceRemovedReason() ) {
-        case DXGI_ERROR_DEVICE_HUNG:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_HUNG)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_DEVICE_REMOVED:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_REMOVED)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_DEVICE_RESET:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_RESET)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DRIVER_INTERNAL_ERROR)";
-            exit( 0 );
-            break;
-
-        case DXGI_ERROR_INVALID_CALL:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_INVALID_CALL)";
-            exit( 0 );
-            break;
-
-        case S_OK:
-            LogInfo() << "Device removed, but we're fine!";
-            break;
-
-        default:
-            LogWarnBox() << "Device Removed! (Unknown reason)";
-        }
+    if ( FAILED( hr ) ) {
+        LogError() << "Present parameters: vsync=" << vsync << ", tearing=" << (m_flipWithTearing && !exclusive && !vsync)
+            << ", requested window mode=" << m_windowMode << ", HDR output=" << m_HDRSwapChain;
     } else if ( hr == S_OK && frameLatencyWaitableObject ) {
         WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
     }
 
     PresentPending = false;
 
-    return XR_SUCCESS;
+    return CheckGraphicsResult( hr, "Present" );
 }
 
 /** Called to set the current viewport */
