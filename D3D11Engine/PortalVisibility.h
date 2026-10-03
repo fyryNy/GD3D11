@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -11,6 +12,7 @@
 class PortalVisibility {
 public:
     struct Vec3 { float x, y, z; };
+    struct Vec3d { double x, y, z; };
     struct Matrix { float m[4][4]; }; // Row-vector world position * view-projection.
     struct Portal {
         size_t from, to;
@@ -18,6 +20,7 @@ public:
         float distance;
         std::vector<Vec3> vertices;
     };
+    using OcclusionTest = std::function<bool( const Portal&, const std::vector<Vec3d>& )>;
 
     void Reset() {
         portals.clear();
@@ -25,6 +28,7 @@ public:
         windows.clear();
         projected.clear();
         projectionState.clear();
+        projectedWorld.clear();
         ready = false;
     }
 
@@ -45,12 +49,14 @@ public:
         windows.resize( sectorCount );
         projected.resize( portals.size() );
         projectionState.resize( portals.size() );
+        projectedWorld.resize( portals.size() );
         for ( size_t i = 0; i < portals.size(); ++i ) outgoing[portals[i].from].push_back( i );
     }
 
     bool HasData() const { return !portals.empty(); }
 
-    void Update( const Matrix& transform, const Vec3& camera, size_t cameraSector ) {
+    void Update( const Matrix& transform, const Vec3& camera, size_t cameraSector,
+        const OcclusionTest& isOccluded = {} ) {
         ready = false;
         if ( !HasData() || cameraSector >= windows.size() || !Finite( camera ) ) return;
         bool nonzero = false;
@@ -79,11 +85,22 @@ public:
                     const double side = double( camera.x ) * face.normal.x +
                         double( camera.y ) * face.normal.y + double( camera.z ) * face.normal.z - face.distance;
                     // A small tolerance keeps a face reachable while crossing its plane.
-                    projected[index] = side <= 0.001 ? ProjectPortal( face ) : Rect{};
+                    projectedWorld[index].clear();
+                    projected[index] = side <= 0.001 ? ProjectPortal( face,
+                        isOccluded ? &projectedWorld[index] : nullptr ) : Rect{};
                     projectionState[index] = 1;
                 }
                 const Rect visible = Intersect( incoming, projected[index] );
                 if ( !visible.Valid() ) continue;
+                // Frustum visibility alone cannot expose a door behind a solid wall.
+                // Test actual clipped geometry once, only for a reachable portal.
+                if ( isOccluded && projectionState[index] == 1 ) {
+                    projectionState[index] = 2;
+                    if ( isOccluded( face, projectedWorld[index] ) ) {
+                        projected[index] = {};
+                        continue;
+                    }
+                }
                 Rect& destination = windows[face.to];
                 const Rect expanded = destination.Valid() ? Union( destination, visible ) : visible;
                 if ( destination == expanded ) continue;
@@ -114,7 +131,10 @@ private:
             return left == other.left && right == other.right && bottom == other.bottom && top == other.top;
         }
     };
-    struct ClipVertex { double x, y, z, w; };
+    struct ClipVertex {
+        double x, y, z, w;
+        double worldX, worldY, worldZ;
+    };
 
     static bool Finite( const Vec3& v ) {
         return std::isfinite( v.x ) && std::isfinite( v.y ) && std::isfinite( v.z );
@@ -140,6 +160,9 @@ private:
     }
     ClipVertex Transform( const Vec3& v ) const {
         ClipVertex result;
+        result.worldX = v.x;
+        result.worldY = v.y;
+        result.worldZ = v.z;
         double* components[] = {&result.x, &result.y, &result.z, &result.w};
         for ( size_t i = 0; i < 4; ++i ) {
             *components[i] = double( v.x ) * matrix.m[0][i] + double( v.y ) * matrix.m[1][i] +
@@ -158,9 +181,12 @@ private:
     }
     static ClipVertex Lerp( const ClipVertex& a, const ClipVertex& b, double t ) {
         return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
-            a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t};
+            a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t,
+            a.worldX + (b.worldX - a.worldX) * t,
+            a.worldY + (b.worldY - a.worldY) * t,
+            a.worldZ + (b.worldZ - a.worldZ) * t};
     }
-    Rect ProjectPortal( const Portal& face ) const {
+    Rect ProjectPortal( const Portal& face, std::vector<Vec3d>* clippedWorld ) const {
         std::vector<ClipVertex> polygon;
         polygon.reserve( face.vertices.size() + 5 );
         for ( const Vec3& v : face.vertices ) polygon.push_back( Transform( v ) );
@@ -188,6 +214,7 @@ private:
         Rect bounds;
         for ( const ClipVertex& v : polygon ) {
             IncludePoint( bounds, v.x / v.w, v.y / v.w );
+            if ( clippedWorld ) clippedWorld->push_back( {v.worldX, v.worldY, v.worldZ} );
         }
         return Intersect( bounds, FullWindow() );
     }
@@ -214,5 +241,6 @@ private:
     std::vector<std::vector<size_t>> outgoing;
     std::vector<Rect> windows, projected;
     std::vector<unsigned char> projectionState;
+    std::vector<std::vector<Vec3d>> projectedWorld;
     bool ready = false;
 };

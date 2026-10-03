@@ -130,6 +130,9 @@
     <ClInclude Include="PortalVisibility.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="PortalOcclusion.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
     <ClInclude Include="D3D7\FakeDirectDrawSurface7.h">
       <Filter>D3D7</Filter>
     </ClInclude>

@@ -4,6 +4,7 @@
 #include <cmath>
 #include "pch.h"
 #include "GothicAPI.h"
+#include "PortalOcclusion.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
@@ -553,6 +554,7 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 void GothicAPI::ResetWorld() {
     RoomPortalVisibility.Reset();
     RoomPortalSectorIDs.clear();
+    RoomPortalOccluders.clear();
     RoomPortalVisibilityReady = false;
 
     WorldSections.clear();
@@ -3510,6 +3512,7 @@ void GothicAPI::DebugDrawBSPTree() {
 void GothicAPI::BuildRoomPortalVisibility( zCBspTree* tree ) {
     RoomPortalVisibility.Reset();
     RoomPortalSectorIDs.clear();
+    RoomPortalOccluders.clear();
     RoomPortalVisibilityReady = false;
 
     if ( !tree || !LoadedWorldInfo || LoadedWorldInfo->CustomWorldLoaded ) {
@@ -3613,6 +3616,200 @@ void GothicAPI::BuildRoomPortalVisibility( zCBspTree* tree ) {
     }
 
     RoomPortalVisibility.Configure( RoomPortalSectorIDs.size() + 1, std::move( portals ) );
+
+    // Native BSP traversal applies authored occlusion before activating portals.
+    // Ghost occluders deliberately have no DX11 world mesh, but still hide rooms.
+    if ( RoomPortalVisibility.HasData() ) {
+        std::vector<zCPolygon*> polygons;
+        tree->GetLOD0Polygons( polygons );
+        seen.clear();
+        for ( zCPolygon* polygon : polygons ) {
+            if ( !polygon || !seen.insert( polygon ).second ) {
+                continue;
+            }
+            const PolyFlags* flags = polygon->GetPolyFlags();
+            if ( !flags->GhostOccluder && (!flags->Occluder || flags->PortalPoly) ) {
+                continue;
+            }
+            RoomPortalOccluder occluder;
+            if ( CopyRoomPortalOccluder( polygon, occluder ) ) {
+                RoomPortalOccluders.push_back( std::move( occluder ) );
+            }
+        }
+    }
+}
+
+bool GothicAPI::CopyRoomPortalOccluder( zCPolygon* polygon, RoomPortalOccluder& occluder ) const {
+    if ( !polygon || polygon->GetNumPolyVertices() < 3 || !polygon->getVertices() ) {
+        return false;
+    }
+    occluder = RoomPortalOccluder{};
+    occluder.Polygon = polygon;
+    occluder.Ghost = polygon->GetPolyFlags()->GhostOccluder != 0;
+    const zTPlane plane = polygon->GetPlane();
+    occluder.Normal = { plane.Normal.x, plane.Normal.y, plane.Normal.z };
+    occluder.Distance = plane.Distance;
+    if ( !std::isfinite( plane.Distance ) || !std::isfinite( plane.Normal.x ) ||
+        !std::isfinite( plane.Normal.y ) || !std::isfinite( plane.Normal.z ) ||
+        (plane.Normal.x == 0 && plane.Normal.y == 0 && plane.Normal.z == 0) ) {
+        return false;
+    }
+    for ( unsigned int i = 0; i < polygon->GetNumPolyVertices(); ++i ) {
+        const zCVertex* vertex = polygon->getVertices()[i];
+        if ( !vertex || !std::isfinite( vertex->Position.x ) ||
+            !std::isfinite( vertex->Position.y ) || !std::isfinite( vertex->Position.z ) ) {
+            return false;
+        }
+        const PortalVisibility::Vec3 position = { vertex->Position.x, vertex->Position.y, vertex->Position.z };
+        if ( i == 0 ) {
+            occluder.Minimum = occluder.Maximum = position;
+        } else {
+            occluder.Minimum.x = (std::min)( occluder.Minimum.x, position.x );
+            occluder.Minimum.y = (std::min)( occluder.Minimum.y, position.y );
+            occluder.Minimum.z = (std::min)( occluder.Minimum.z, position.z );
+            occluder.Maximum.x = (std::max)( occluder.Maximum.x, position.x );
+            occluder.Maximum.y = (std::max)( occluder.Maximum.y, position.y );
+            occluder.Maximum.z = (std::max)( occluder.Maximum.z, position.z );
+        }
+        occluder.Vertices.push_back( position );
+    }
+    return true;
+}
+
+bool GothicAPI::IsOpaqueRoomPortalOccluder( const RoomPortalOccluder& occluder ) const {
+    if ( occluder.Ghost ) {
+        return true; // Authored invisible occlusion is independent of material opacity.
+    }
+    if ( !RendererState.RendererSettings.DrawWorldMesh || !occluder.Polygon || occluder.Vertices.size() < 3 ||
+        occluder.Polygon->GetPolyFlags()->PortalPoly ) {
+        return false;
+    }
+    zCMaterial* material = occluder.Polygon->GetMaterial();
+    if ( !material || material->GetMatGroup() == zMAT_GROUP_WATER ||
+        material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE || (material->GetColor() >> 24) != 255 ) {
+        return false;
+    }
+    zCTexture* texture = material->GetCurrentTexture();
+    if ( !texture || texture->HasAlphaChannel() ) {
+        return false;
+    }
+
+    // The converter assigns the whole polygon to its first triangle's section.
+    // Require the material's mesh to remain present: suppressed editor textures
+    // and surfaces handled by special transparent shaders cannot hide a room.
+    const auto& vertices = occluder.Vertices;
+    const XMFLOAT3 midpoint(
+        static_cast<float>((double( vertices[0].x ) + vertices[1].x + vertices[2].x) / 3),
+        static_cast<float>((double( vertices[0].y ) + vertices[1].y + vertices[2].y) / 3),
+        static_cast<float>((double( vertices[0].z ) + vertices[1].z + vertices[2].z) / 3) );
+    const INT2 coordinates = WorldConverter::GetSectionOfPos( midpoint );
+    const auto row = WorldSections.find( coordinates.x );
+    if ( row == WorldSections.end() ) {
+        return false;
+    }
+    const auto section = row->second.find( coordinates.y );
+    if ( section == row->second.end() ) {
+        return false;
+    }
+    for ( const auto& mesh : section->second.WorldMeshes ) {
+        if ( mesh.first.Material == material && mesh.first.Info &&
+            mesh.first.Info->MaterialType == MaterialInfo::MT_None && mesh.second ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool GothicAPI::IsRoomPortalOccluded( const std::vector<PortalVisibility::Vec3d>& vertices,
+    const PortalVisibility::Vec3& camera, size_t& traceBudget ) const {
+    if ( vertices.size() < 3 ) {
+        return false;
+    }
+    PortalOcclusion::Vec3 minimum = { camera.x, camera.y, camera.z }, maximum = minimum;
+    std::vector<PortalOcclusion::Vec3> target;
+    target.reserve( vertices.size() );
+    for ( const auto& vertex : vertices ) {
+        minimum.x = (std::min)( minimum.x, vertex.x );
+        minimum.y = (std::min)( minimum.y, vertex.y );
+        minimum.z = (std::min)( minimum.z, vertex.z );
+        maximum.x = (std::max)( maximum.x, vertex.x );
+        maximum.y = (std::max)( maximum.y, vertex.y );
+        maximum.z = (std::max)( maximum.z, vertex.z );
+        target.push_back( { vertex.x, vertex.y, vertex.z } );
+    }
+
+    std::vector<PortalOcclusion::Polygon> blockers;
+    std::unordered_set<zCPolygon*> seen;
+    constexpr size_t maximumBlockers = 128;
+    auto addBlocker = [&]( const RoomPortalOccluder& occluder ) {
+        if ( blockers.size() >= maximumBlockers ||
+            occluder.Minimum.x > maximum.x || occluder.Maximum.x < minimum.x ||
+            occluder.Minimum.y > maximum.y || occluder.Maximum.y < minimum.y ||
+            occluder.Minimum.z > maximum.z || occluder.Maximum.z < minimum.z ) {
+            return;
+        }
+        const double side = double( camera.x ) * occluder.Normal.x +
+            double( camera.y ) * occluder.Normal.y + double( camera.z ) * occluder.Normal.z - occluder.Distance;
+        if ( !occluder.Ghost && side >= -0.001 ) {
+            return; // Native ordinary world polygons occlude only from their front side.
+        }
+        if ( !seen.insert( occluder.Polygon ).second || !IsOpaqueRoomPortalOccluder( occluder ) ) {
+            return;
+        }
+        PortalOcclusion::Polygon blocker;
+        blocker.vertices.reserve( occluder.Vertices.size() );
+        for ( const auto& vertex : occluder.Vertices ) {
+            blocker.vertices.push_back( { vertex.x, vertex.y, vertex.z } );
+        }
+        blockers.push_back( std::move( blocker ) );
+    };
+
+    for ( const auto& occluder : RoomPortalOccluders ) {
+        addBlocker( occluder );
+        if ( blockers.size() >= maximumBlockers ) {
+            break;
+        }
+    }
+    const PortalOcclusion::Vec3 eye = { camera.x, camera.y, camera.z };
+    if ( PortalOcclusion::IsFullyOccluded( target, eye, blockers ) ) {
+        return true;
+    }
+
+    // Rays discover nearby opaque world polygons; a blocked sample alone never
+    // establishes visibility. The complete portal must fit their shadow union.
+    const XMFLOAT3 start( camera.x, camera.y, camera.z );
+    auto discoverBlocker = [&]( const PortalOcclusion::Vec3& point ) {
+        if ( traceBudget == 0 || blockers.size() >= maximumBlockers ) {
+            return;
+        }
+        --traceBudget;
+        XMFLOAT3 hitPosition;
+        zCPolygon* polygon = nullptr;
+        const XMFLOAT3 end( static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z) );
+        // STAT_POLY | POLY_IGNORE_TRANSP; no vobs and no portal surfaces.
+        if ( LoadedWorldInfo->BspTree->TraceRay( start, end, 0x120, hitPosition, polygon ) && polygon ) {
+            RoomPortalOccluder occluder;
+            if ( CopyRoomPortalOccluder( polygon, occluder ) ) {
+                addBlocker( occluder );
+            }
+        }
+    };
+    PortalOcclusion::Vec3 center{};
+    for ( const auto& vertex : target ) {
+        center.x += vertex.x / target.size();
+        center.y += vertex.y / target.size();
+        center.z += vertex.z / target.size();
+    }
+    discoverBlocker( center );
+    const size_t samples = (std::min)( size_t(16), target.size() );
+    for ( size_t i = 0; i < samples; ++i ) {
+        const size_t index = i * target.size() / samples;
+        const auto& a = target[index];
+        const auto& b = target[(index + 1) % target.size()];
+        discoverBlocker( a );
+        discoverBlocker( { (a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5 } );
+    }
+    return PortalOcclusion::IsFullyOccluded( target, eye, blockers );
 }
 
 bool GothicAPI::HasRoomPortalVisibilityData() const {
@@ -3657,7 +3854,12 @@ void GothicAPI::UpdateRoomPortalVisibility() {
         XMMatrixTranspose( XMMatrixMultiply( XMLoadFloat4x4( &GetProjectionMatrix() ), GetViewMatrixXM() ) ) );
     PortalVisibility::Matrix matrix;
     memcpy( matrix.m, &viewProjection, sizeof( matrix.m ) );
-    RoomPortalVisibility.Update( matrix, { cameraPosition.x, cameraPosition.y, cameraPosition.z }, cameraSector );
+    const PortalVisibility::Vec3 camera = { cameraPosition.x, cameraPosition.y, cameraPosition.z };
+    size_t traceBudget = 256;
+    RoomPortalVisibility.Update( matrix, camera, cameraSector,
+        [&]( const PortalVisibility::Portal&, const std::vector<PortalVisibility::Vec3d>& vertices ) {
+            return IsRoomPortalOccluded( vertices, camera, traceBudget );
+        } );
     RoomPortalVisibilityReady = true;
 }
 

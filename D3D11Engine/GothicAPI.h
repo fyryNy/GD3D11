@@ -718,8 +718,20 @@ public:
     float GetSkyTimeScale();
 
 private:
+    struct RoomPortalOccluder {
+        zCPolygon* Polygon = nullptr;
+        std::vector<PortalVisibility::Vec3> Vertices;
+        PortalVisibility::Vec3 Normal{}, Minimum{}, Maximum{};
+        float Distance = 0;
+        bool Ghost = false;
+    };
+
     void BuildRoomPortalVisibility( zCBspTree* tree );
     void UpdateRoomPortalVisibility();
+    bool CopyRoomPortalOccluder( zCPolygon* polygon, RoomPortalOccluder& occluder ) const;
+    bool IsOpaqueRoomPortalOccluder( const RoomPortalOccluder& occluder ) const;
+    bool IsRoomPortalOccluded( const std::vector<PortalVisibility::Vec3d>& vertices,
+        const PortalVisibility::Vec3& camera, size_t& traceBudget ) const;
 
     /** Collects polygons in the given AABB */
     void CollectPolygonsInAABBRec( BspInfo* base, const zTBBox3D& bbox, std::vector<zCPolygon*>& list );
@@ -892,5 +904,6 @@ private:
 
     PortalVisibility RoomPortalVisibility;
     std::unordered_map<zCBspSector*, size_t> RoomPortalSectorIDs;
+    std::vector<RoomPortalOccluder> RoomPortalOccluders;
     bool RoomPortalVisibilityReady = false;
 };
