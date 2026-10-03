@@ -341,9 +341,19 @@ private:
         distances.reserve( source.size() );
         bool anyPositive = false;
         for ( const Vertex& vertex : source ) {
-            const double distance = OnBoundary( vertex, plane.id ) ? 0 :
+            double distance = OnBoundary( vertex, plane.id ) ? 0 :
                 Dot( plane.normal, vertex.point ) - plane.distance;
             if ( !std::isfinite( distance ) ) return false;
+            // Dot products on a rotated coplanar doorway can round slightly
+            // positive. A depth boundary needs a provable separation before it
+            // can hide the doorway; side planes retain exact aperture edges.
+            if ( plane.depth && distance > 0 ) {
+                const double scale = (std::max)( 1.0,
+                    (std::max)( Magnitude( vertex.point ), std::abs( plane.distance ) ) );
+                if ( distance <= scale * std::numeric_limits<double>::epsilon() * 64 ) {
+                    distance = 0;
+                }
+            }
             distances.push_back( distance );
             anyPositive = anyPositive || distance > 0;
         }

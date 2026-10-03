@@ -3826,7 +3826,8 @@ bool GothicAPI::IsRoomPortalOccluded( const PortalVisibility::Portal& portal,
         if ( RoomPortalBlockerViews.size() >= 128 || !overlaps( occluder.Minimum, occluder.Maximum ) ) return;
         const double side = double( camera.x ) * occluder.Normal.x +
             double( camera.y ) * occluder.Normal.y + double( camera.z ) * occluder.Normal.z - occluder.Distance;
-        if ( !occluder.Ghost && side >= -0.001 ) return;
+        // Gothic renders ordinary polygons on the positive side of their plane.
+        if ( !occluder.Ghost && side <= 0.001 ) return;
         const auto* geometry = &occluder.Geometry;
         if ( std::find( RoomPortalBlockerViews.begin(), RoomPortalBlockerViews.end(), geometry ) ==
             RoomPortalBlockerViews.end() && IsOpaqueRoomPortalOccluder( occluder ) ) {

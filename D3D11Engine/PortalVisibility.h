@@ -86,7 +86,7 @@ public:
                         double( camera.y ) * face.normal.y + double( camera.z ) * face.normal.z - face.distance;
                     // A small tolerance keeps a face reachable while crossing its plane.
                     projectedWorld[index].clear();
-                    projected[index] = side <= 0.001 ? ProjectPortal( face,
+                    projected[index] = side >= -0.001 ? ProjectPortal( face,
                         isOccluded ? &projectedWorld[index] : nullptr ) : Rect{};
                     projectionState[index] = 1;
                 }
