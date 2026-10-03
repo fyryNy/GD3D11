@@ -877,4 +877,7 @@ private:
     bool m_DebugMode;
 
     std::string m_gameName;
+
+    /** Last wetness update; kept per API instance and reset on world load. */
+    DWORD SceneWetnessLastUpdateMs;
 };

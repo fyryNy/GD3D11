@@ -48,7 +48,7 @@
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
 
-// Duration how long the scene will stay wet, in MS
+// Time for a fully wet scene to dry completely, in milliseconds.
 const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
 
 // Draw ghost from back to front of our camera
@@ -128,6 +128,9 @@ GothicAPI::GothicAPI() {
 
     _canRain = false;
     _canClearVobsByVisual = false;
+
+    SceneWetness = 0.0f;
+    SceneWetnessLastUpdateMs = Toolbox::timeSinceStartMs();
 }
 
 GothicAPI::~GothicAPI() {
@@ -747,6 +750,7 @@ void GothicAPI::OnWorldLoaded() {
     SaveRendererWorldSettings( RendererState.RendererSettings );
     // Reset wetness
     SceneWetness = GetRainFXWeight();
+    SceneWetnessLastUpdateMs = Toolbox::timeSinceStartMs();
 
 #ifndef PUBLIC_RELEASE
     // Enable input again, disabled it when loading started
@@ -5241,7 +5245,10 @@ void GothicAPI::PrintModInfo() {
 
 /** Returns the current weight of the rain-fx. The bigger value of ours and gothics is returned. */
 float GothicAPI::GetRainFXWeight() {
-    float myRainFxWeight = RendererState.RendererSettings.RainSceneWettness;
+    const auto clampRainWeight = []( float weight ) {
+        return std::isfinite( weight ) ? std::clamp( weight, 0.0f, 1.0f ) : 0.0f;
+    };
+    float myRainFxWeight = clampRainWeight( RendererState.RendererSettings.RainSceneWettness );
     float gRainFxWeight = 0.0f;
 
     if ( oCGame* ogame = oCGame::GetGame() ) {
@@ -5255,7 +5262,7 @@ float GothicAPI::GetRainFXWeight() {
     }
 
     // This doesn't seem to go as high as 1 or just very slowly. Scale it so it does go up quicker.
-    gRainFxWeight = std::min( gRainFxWeight / 0.85f, 1.0f );
+    gRainFxWeight = std::min( clampRainWeight( gRainFxWeight ) / 0.85f, 1.0f );
 
     // Return the higher of the two, so we get the chance to overwrite it
     return std::max( myRainFxWeight, gRainFxWeight );
@@ -5263,30 +5270,20 @@ float GothicAPI::GetRainFXWeight() {
 
 /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
 float GothicAPI::GetSceneWetness() {
-    float rain = GetRainFXWeight();
-    static DWORD s_rainStopTime = Toolbox::timeSinceStartMs();
+    const float rain = GetRainFXWeight();
+    const DWORD now = Toolbox::timeSinceStartMs();
+    // Unsigned subtraction also handles the millisecond clock wrapping.
+    const DWORD elapsed = now - SceneWetnessLastUpdateMs;
+    SceneWetnessLastUpdateMs = now;
 
-    if ( rain >= SceneWetness ) {
-        SceneWetness = rain; // Rain is starting or still going
-        s_rainStopTime = Toolbox::timeSinceStartMs(); // Just querry this until we fall into the else-branch some time
-    } else {
-        // Rain has just stopped, get time of how long the rain isn't going anymore
-        DWORD rainStoppedFor = Toolbox::timeSinceStartMs() - s_rainStopTime;
+    const float drying = std::min( static_cast<float>(elapsed) /
+        static_cast<float>(SCENE_WETNESS_DURATION_MS), 1.0f );
+    // Weakened rain must never make the scene wetter. Keep the current rain as
+    // a lower bound and remove only the wetness accumulated before this update.
+    SceneWetness = std::max( rain, SceneWetness - drying );
 
-        // Get ratio between duration and that time. This value is near 1 when we almost reached the duration
-        float ratio = rainStoppedFor / static_cast<float>(SCENE_WETNESS_DURATION_MS);
-
-        // clamp at 1.0f so the whole thing doesn't start over when reaching 0
-        if ( ratio >= 1.0f )
-            ratio = 1.0f;
-
-        // make the wetness last longer by applying a pow, then inverse it so 1 means that the scene is actually wet
-        SceneWetness = std::max( 0.0f, 1.0f - pow( ratio, 8.0f ) );
-
-        // Just force to 0 when this reached a tiny amount so we can switch the shaders
-        if ( SceneWetness < 0.00001f )
-            SceneWetness = 0.0f;
-    }
+    if ( SceneWetness < 0.00001f )
+        SceneWetness = rain;
 
     return SceneWetness;
 }

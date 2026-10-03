@@ -167,11 +167,40 @@ float ComputeShadowValue(float2 uv, float3 wsPosition, Texture2D shadowmap, Samp
 static const float WEIGHT_BIAS = -0.55;
 static const float WEIGHT_MUL = 0.7;
 
+float3 NormalizeRainVector(float3 value, float3 fallback)
+{
+	float lengthSquared = dot(value, value);
+	return lengthSquared > 0.000001f ? value * rsqrt(lengthSquared) : fallback;
+}
+
+void ComputeRainPositionGradients(float2 screenUV, float depth, float3 vsPosition, float3 vsNormal, out float3 wsPositionDX, out float3 wsPositionDY)
+{
+	uint width, height;
+	TX_Depth.GetDimensions(width, height);
+	float4 projectedPosition = float4(screenUV * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), depth, 1.0f);
+	float positionW = mul(projectedPosition, SQ_InvProj).w;
+	float inverseW = 1.0f / (positionW < 0.0f ? min(positionW, -0.000001f) : max(positionW, 0.000001f));
+
+	// Differentiate the inverse projection on the local surface plane. Unlike
+	// ddx/ddy, these gradients remain valid inside pixel-dependent branches.
+	float3 directionX = SQ_InvProj[0].xyz - vsPosition * SQ_InvProj[0].w;
+	float3 directionY = SQ_InvProj[1].xyz - vsPosition * SQ_InvProj[1].w;
+	float3 directionDepth = SQ_InvProj[2].xyz - vsPosition * SQ_InvProj[2].w;
+	float normalDepth = dot(vsNormal, directionDepth);
+	float minimumNormalDepth = max(length(directionDepth) * 0.0001f, 0.000001f);
+	float inverseNormalDepth = 1.0f / (normalDepth < 0.0f ? min(normalDepth, -minimumNormalDepth) : max(normalDepth, minimumNormalDepth));
+	float3 vsPositionDX = (directionX - directionDepth * dot(vsNormal, directionX) * inverseNormalDepth) * (2.0f * inverseW / max(width, 1u));
+	float3 vsPositionDY = (directionY - directionDepth * dot(vsNormal, directionY) * inverseNormalDepth) * (-2.0f * inverseW / max(height, 1u));
+	wsPositionDX = mul(vsPositionDX, (float3x3)SQ_InvView);
+	wsPositionDY = mul(vsPositionDY, (float3x3)SQ_InvView);
+}
+
 /** Applys normal-deformation for the rain */
-void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout float3 diffuse, out float3 wsNormal)
+void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, float3 wsPositionDX, float3 wsPositionDY)
 {
 	// Need worldspace normal for this
-	wsNormal = mul(vsNormal, (float3x3)SQ_InvView).xyz;
+	float3 wsNormal = NormalizeRainVector(mul(vsNormal, (float3x3)SQ_InvView).xyz, float3(0, 1, 0));
+	float3 originalNormal = wsNormal;
 	
 	float2 groundDir = normalize(float2(0.1f, 0.1f) + saturate(cross(wsNormal, float3(0.0f,1.0f,0.0f)).xz));
 	
@@ -180,6 +209,14 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 					wsPosition.xz / (scale*2),
 					wsPosition.xz / (scale*2),					
 					wsPosition.xy / scale};
+	float2 uvDX[4] = {wsPositionDX.zy / scale,
+					wsPositionDX.xz / (scale*2),
+					wsPositionDX.xz / (scale*2) * float2(0.8f, 1.2f),
+					wsPositionDX.xy / scale};
+	float2 uvDY[4] = {wsPositionDY.zy / scale,
+					wsPositionDY.xz / (scale*2),
+					wsPositionDY.xz / (scale*2) * float2(0.8f, 1.2f),
+					wsPositionDY.xy / scale};
 	
 	float groundSpeed = 0.1f * AC_RainFXWeight;
 	float downSpeed = 0.2f * AC_RainFXWeight;
@@ -197,16 +234,15 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 	weights = (weights + WEIGHT_BIAS) * WEIGHT_MUL;
 	weights = max(weights, 0);						
 							
-	weights /= (weights.x + weights.y +
-				weights.z ).xxx;
+	weights /= max(weights.x + weights.y + weights.z, 0.000001f);
 				
 	weights.xz *= 0.6f;
 	weights.y *= 0.7f;
 		
-	float3 dist[3] =  {normalize((TX_Distortion.Sample(SS_Linear, uv[0]).zyx * 2 - 1)), 
-					  normalize((TX_Distortion.Sample(SS_Linear, uv[1]).xzy * 2 - 1)) * 0.5f + 
-					  normalize((TX_Distortion.Sample(SS_Linear, uv[2]).xzy * 2 - 1)) * 0.5f, 
-					  normalize((TX_Distortion.Sample(SS_Linear, uv[3]).xyz * 2 - 1))};
+	float3 dist[3] =  {NormalizeRainVector(TX_Distortion.SampleGrad(SS_Linear, uv[0], uvDX[0], uvDY[0]).zyx * 2 - 1, originalNormal),
+					  NormalizeRainVector(TX_Distortion.SampleGrad(SS_Linear, uv[1], uvDX[1], uvDY[1]).xzy * 2 - 1, originalNormal) * 0.5f +
+					  NormalizeRainVector(TX_Distortion.SampleGrad(SS_Linear, uv[2], uvDX[2], uvDY[2]).xzy * 2 - 1, originalNormal) * 0.5f,
+					  NormalizeRainVector(TX_Distortion.SampleGrad(SS_Linear, uv[3], uvDX[3], uvDY[3]).xyz * 2 - 1, originalNormal)};
 		
 	weights = pow(weights, 4.0f);
 		
@@ -219,75 +255,45 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 		wsNormal = lerp(wsNormal, dist[i], weights[i] * distWeight);//distWeight * weights[i]); 
 	}
 
-	wsNormal = normalize(wsNormal);
+	wsNormal = NormalizeRainVector(wsNormal, originalNormal);
 	//diffuse.xyz = wsNormal;
 	
 	vsNormal = normalize(mul(wsNormal, (float3x3)SQ_View).xyz);
 }
 
 /** Returns new diffusecolor (rgb)*/
-void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float specAdd)
+void ApplySceneWettness(float3 wsPosition, float3 wsPositionDX, float3 wsPositionDY, float3 vsPosition, float3 vsDir, inout float3 vsNormal, inout float3 diffuse, float specIntensity, float specPower, out float3 specAdd)
 {
+	specAdd = 0.0f;
 	// Ask the rain-shadowmap if we can hit this pixel
-	float pixelWettnes = ComputeShadowValue(0.0f, wsPosition, TX_RainShadowmap, SS_Comp, vsPosition.z, 1.0f, mul(SQ_RainView, SQ_RainProj), 0.0001f, 2.5f) * AC_SceneWettness;
-	pixelWettnes = pixelWettnes < 0.001f ? 0 : pixelWettnes;
-	
-	//IsWet(wsPosition, TX_RainShadowmap, SS_Comp) * AC_SceneWettness;
+	float pixelWettnes = ComputeShadowValue(0.0f, wsPosition, TX_RainShadowmap, SS_Comp, vsPosition.z, 1.0f, mul(SQ_RainView, SQ_RainProj), 0.0001f, 2.5f) * saturate(AC_SceneWettness);
+	float3 originalNormal = vsNormal;
+	float3 wsNormal = NormalizeRainVector(mul(originalNormal, (float3x3)SQ_InvView).xyz, float3(0, 1, 0));
+	float upward = saturate(wsNormal.y);
+	// Walls retain a thin wet film; horizontal surfaces retain more water.
+	pixelWettnes *= lerp(0.2f, 1.0f, upward * upward) * (1.0f - saturate(-wsNormal.y));
+	if (pixelWettnes < 0.001f) return;
 
-	float3 vsNormalCpy = vsNormal;
-	
-	// Apply water-effects
-	float3 nrm = vsNormal;
-	float3 wsNormal;
-	ApplyRainNormalDeformation(nrm, wsPosition, diffuse.rgb, wsNormal);
-	pixelWettnes *= 1 - pow(saturate(dot(wsNormal, float3(0,-1,0))), 4.0f);
-	
-	vsNormal = lerp(vsNormal, nrm, AC_RainFXWeight * pixelWettnes * 0.5f); // Only apply deformation if it's actually raining
-	
-	// Get fresnel-effect
-	float fresnel = pow(1.0f - max(0.0f, dot(vsNormal, -vsDir)), 160.0f);
-	
-	
-	//vsNormalCpy.z *= 0.3f;
-	//vsNormalCpy = normalize(vsNormalCpy);
-	
-	// Scale specular intensity and power
-	specIntensity = lerp(specIntensity, 0.0, pixelWettnes);
-	specPower = lerp(specPower, 150.0f, pixelWettnes);
-	
-	// Reflection
-	float3 reflect_vec = reflect(-vsDir.xyz, vsNormal.xyz);
-	
-	// sample reflection cube
-	float4 refCube = TX_ReflectionCube.Sample(SS_Linear, reflect_vec);
-	float3 reflection = refCube.rgb * refCube.a;
-	
-	float3 l1 = normalize(float3(0.0f,0.5f,-1.0f));
-	float3 l2 = normalize(mul(normalize(float3(-0.333f,0.533f,0.333f)), (float3x3)SQ_View));
-	float3 l3 = normalize(mul(normalize(float3(0,0.566f,-0.666f)), (float3x3)SQ_View));
-	
-	float3 H_1 = normalize(l1 + vsDir);
-	float3 H_2 = normalize(l2 + vsDir);
-	float3 H_3 = normalize(l3 + vsDir);
-	float spec1 = CalcBlinnPhongLighting(vsNormal, H_1);
-	float spec2 = CalcBlinnPhongLighting(vsNormal, H_2);
-	float spec3 = CalcBlinnPhongLighting(vsNormal, H_3);
-		
-	// power the reflection 
-	reflection = pow(reflection, 2.5f) * 1.0f;
-	//reflection += fresnel * 0.1f;
-	
-	reflection += pow(spec1, specPower) * 0.7f + pow(spec2, specPower) * 0.7f + pow(spec3, specPower) * 0.6f;
-	
-	// Compute wet pixel color
-	float diffuseLum = dot(diffuse, float3(0.3333f,0.3333f,0.3333f));
-	float3 wetPixel = lerp(diffuseLum, diffuse, 0.75f) * 0.75f; // Desaturate and darken the scene a bit	
-	
-	
-	
-	// Scale the total amount of spec-lighting by the wetness factor and whether the scene is currently drying out or it's still raining
-	specAdd = reflection * pixelWettnes * lerp(0.08f, 0.10f, AC_RainFXWeight);
-	diffuse = lerp(diffuse, wetPixel, pixelWettnes);
+	// Keep the material's own highlight shape and color. Wetness mainly darkens
+	// the texture; it must not turn grass or a matte FX-map region into a mirror.
+	diffuse *= lerp(1.0f, 0.82f, pixelWettnes);
+	float materialResponse = saturate(specIntensity * 4.0f) * smoothstep(0.0f, 16.0f, specPower);
+	if (materialResponse <= 0.0f) return;
+
+	float rippleWeight = saturate(AC_RainFXWeight) * pixelWettnes * upward * 0.1f;
+	if (rippleWeight > 0.0f)
+	{
+		float3 nrm = originalNormal;
+		ApplyRainNormalDeformation(nrm, wsPosition, wsPositionDX, wsPositionDY);
+		vsNormal = NormalizeRainVector(lerp(originalNormal, nrm, rippleWeight), originalNormal);
+	}
+
+	float fresnel = 0.02f + 0.98f * pow(1.0f - saturate(dot(originalNormal, vsDir)), 5.0f);
+	float gloss = materialResponse * saturate(specPower / 150.0f);
+	// The sky cubemap is world-oriented and has rough mips for a softer reflection.
+	float3 reflect_vec = mul(reflect(-vsDir, vsNormal), (float3x3)SQ_InvView);
+	float4 refCube = TX_ReflectionCube.SampleLevel(SS_Linear, reflect_vec, lerp(4.0f, 2.0f, gloss));
+	specAdd = max(refCube.rgb, 0.0f) * saturate(refCube.a) * fresnel * materialResponse * pixelWettnes * 0.35f;
 }
 
 //--------------------------------------------------------------------------------------
@@ -353,13 +359,12 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	
 	// Compute wettness
-	float specWet = 0.0f;
+	float3 specWet = 0.0f;
 	
 #ifdef APPLY_RAIN_EFFECTS
-	ApplySceneWettness(wsPosition, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet);
-	
-	// Boost specWet when not in shadow
-	specWet += specWet * shadow;
+	float3 wsPositionDX, wsPositionDY;
+	ComputeRainPositionGradients(uv, expDepth, vsPosition, normal, wsPositionDX, wsPositionDY);
+	ApplySceneWettness(wsPosition, wsPositionDX, wsPositionDY, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet);
 #endif
 	// Compute specular lighting
 	
@@ -381,7 +386,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow) * 1.0f;
 
 	spec = pow(spec, specPower) * specIntensity;
-	float3 specBare = spec * lightColor.rgb * sun + specWet * lightColor.rgb;
+	float3 specBare = spec * lightColor.rgb * sun;
 	float3 specColored = saturate(lerp(specBare, specBare * diffuse.rgb, specMod));
 	
 	float shadowAO = lerp(1.0f, vertLighting, SQ_ShadowAOStrength);
@@ -389,7 +394,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	float3 litPixel = lerp( diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO, 
 							diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun) 
-				  + specColored;
+					  + specColored + specWet;
 	
     float fresnel = pow(1.0f - saturate(dot(normal, V)), 10.0f);
     litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);
@@ -409,4 +414,3 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	//return float4(pow(spec, specPower) * specIntensity.xxx * diffuse.rgb * SQ_LightColor.rgb,1);
 	
 }
-
