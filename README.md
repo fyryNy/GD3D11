@@ -38,7 +38,9 @@ rebuilt renderer DLL. Releases include the 32-bit DXC compiler and validator in
 `GD3D11/Bin`; keep these files with the renderer.
 
 The first implementation traces world meshes and static/morph objects, including
-off-camera geometry and alpha-tested textures. Sunlight retains raster shadows
+off-camera geometry and alpha-tested textures. Ray-tracing material copies use
+filtered lower mip levels within a bounded memory budget; the main renderer's
+texture resolution is unchanged. Sunlight retains raster shadows
 for animated characters. Reflections cover opaque specular surfaces; animated
 characters, shader-only foliage wind, water reflections, and bounced global
 illumination are not included. Unsupported hardware or resource limits fall back
@@ -53,6 +55,9 @@ uses the 64-bit Vulkan driver for the 32-bit game. Use a separate game prefix
 with the native `d3d11`, `dxgi`, `d3d12`, and `d3d12core` libraries. Mixing DXVK
 with Wine's built-in D3D12 can fail before ray tracing initializes. Native
 Windows driver support for this 32-bit path requires separate verification.
+Initialize the prefix through Proton so its DirectDraw support libraries are
+installed too. When configuring Wine directly, include the matching Proton
+`libvkd3d-*.dll` libraries required by its built-in WineD3D.
 
 > **Note**: If you have problems with launching game after installing GD3D11 - for example getting Access Denied(0x45a), reinstall your Visual C++ Redistributable for Visual Studio 2015-2022 to latest version from Microsoft page, mod stopped working on older VCR due to some Microsoft changes in Platform Toolset.
 

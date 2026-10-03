@@ -70,7 +70,7 @@ Texture2D<float4> Source : register(t0);
 TextureCube<float4> Cube : register(t1);
 SamplerState LinearSampler : register(s0);
 cbuffer BlitConstants : register(b0) { uint Face; uint3 Pad; };
-float4 PSMain(Varyings input) : SV_TARGET { return Source.SampleLevel(LinearSampler, input.UV, 0); }
+float4 PSMain(Varyings input) : SV_TARGET { return Source.Sample(LinearSampler, input.UV); }
 float4 PSCube(Varyings input) : SV_TARGET {
     float2 p = input.UV * 2 - 1;
     float3 direction;
@@ -99,6 +99,24 @@ D3D12_RESOURCE_DESC BufferDescription( UINT64 size, D3D12_RESOURCE_FLAGS flags =
     description.SampleDesc.Count = 1;
     description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     description.Flags = flags;
+    return description;
+}
+
+D3D12_RESOURCE_DESC SharedTextureDescription( UINT width, UINT height, DXGI_FORMAT format,
+    UINT arraySize, D3D12_RESOURCE_FLAGS flags ) {
+    D3D12_RESOURCE_DESC description = {};
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Width = width;
+    description.Height = height;
+    description.DepthOrArraySize = static_cast<UINT16>(arraySize);
+    description.MipLevels = 1;
+    description.Format = format;
+    description.SampleDesc.Count = 1;
+    // Render-target capability also makes VKD3D export a D3D11-compatible
+    // resource descriptor. DXVK cannot import its native D3D12 descriptor
+    // for SRV-only or UAV-only textures, even when their formats match.
+    description.Flags = flags | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS |
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     return description;
 }
 
@@ -261,19 +279,7 @@ struct D3D12RayTracing::Impl {
 
     bool Shared( UINT width, UINT height, DXGI_FORMAT format, UINT arraySize,
         D3D12_RESOURCE_FLAGS flags, SharedTexture& texture ) {
-        D3D12_RESOURCE_DESC description = {};
-        description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        description.Width = width;
-        description.Height = height;
-        description.DepthOrArraySize = static_cast<UINT16>(arraySize);
-        description.MipLevels = 1;
-        description.Format = format;
-        description.SampleDesc.Count = 1;
-        // Render-target capability also makes VKD3D export a D3D11-compatible
-        // resource descriptor. DXVK cannot import its native D3D12 descriptor
-        // for SRV-only or UAV-only textures, even when their formats match.
-        description.Flags = flags | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS |
-            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        const auto description = SharedTextureDescription( width, height, format, arraySize, flags );
         const auto heap = HeapProperties( D3D12_HEAP_TYPE_DEFAULT );
         SharedTexture created;
         HRESULT hr = Device->CreateCommittedResource( &heap, D3D12_HEAP_FLAG_SHARED, &description,
@@ -423,7 +429,28 @@ struct D3D12RayTracing::Impl {
         texture->GetDesc( &description );
         UINT width = std::max( 1u, description.Width >> srv.Texture2D.MostDetailedMip );
         UINT height = std::max( 1u, description.Height >> srv.Texture2D.MostDetailedMip );
-        const UINT64 bytes = static_cast<UINT64>(width) * height * 4;
+        // Reserve an equal maximum allocation for every available material
+        // descriptor, so HD textures cannot exhaust the cache before the rest
+        // of a large world is uploaded. The original raster texture is intact.
+        constexpr UINT64 perTextureBudget = TextureBudget / (MaxTextures - 1);
+        auto reduceSize = [&] {
+            width = std::max( 1u, width / 2 );
+            height = std::max( 1u, height / 2 );
+        };
+        while ( std::max( width, height ) > 256 ) reduceSize();
+        UINT64 bytes = 0;
+        for ( ;; ) {
+            const auto copyDescription = SharedTextureDescription( width, height,
+                DXGI_FORMAT_R8G8B8A8_UNORM, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET );
+            const auto allocation = Device->GetResourceAllocationInfo( 0, 1, &copyDescription );
+            if ( allocation.SizeInBytes == std::numeric_limits<UINT64>::max() )
+                return Error( "Invalid ray tracing material texture allocation", E_INVALIDARG );
+            bytes = allocation.SizeInBytes;
+            if ( bytes <= perTextureBudget ) break;
+            if ( width == 1 && height == 1 )
+                return Error( "The minimum ray tracing texture allocation exceeds its budget", E_OUTOFMEMORY );
+            reduceSize();
+        }
         if ( bytes > TextureBudget - TextureBytes ) return Error("The ray tracing material texture budget was exceeded", E_OUTOFMEMORY);
         CachedTexture cached;
         cached.Source = source;
@@ -941,7 +968,13 @@ struct D3D12RayTracing::Impl {
         if ( FAILED(hr) ) return Error("Could not read ray tracing output in Direct3D 11", hr);
         NextSlot = (NextSlot + 1) % FrameCount;
         ValidOutput = true;
-        Status = "Experimental DXR shadows and reflections are active for the supplied scene.";
+        std::ostringstream status;
+        status << "Experimental DXR shadows and reflections are active for the supplied scene ("
+            << scene.Meshes.size() << " meshes, " << scene.Instances.size() << " instances, "
+            << ((GeometryBytes + 1024 * 1024 - 1) / (1024 * 1024)) << " MiB geometry memory, "
+            << Textures.size() << " material textures, " << ((TextureBytes + 1024 * 1024 - 1) / (1024 * 1024))
+            << " MiB shared material texture memory).";
+        Status = status.str();
         return true;
     }
 };
