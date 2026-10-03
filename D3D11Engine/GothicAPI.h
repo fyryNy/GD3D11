@@ -642,6 +642,9 @@ public:
     /** Loads the users settings from the menu */
     XRESULT LoadMenuSettings( const std::string& file );
 
+    /** Updates renderer and Gothic startup settings after a window-mode change */
+    void ApplyWindowPresetSettings( int mode );
+
     /** Adds a staging texture to the list of the staging textures for this frame */
     void AddStagingTexture( UINT mip, ID3D11Texture2D* stagingTexture, ID3D11Texture2D* texture );
 

@@ -104,8 +104,8 @@ XRESULT D2DSettingsDialog::InitControls() {
     modeLabel->SetPositionAndSize( D2D1::Point2F( 10, 10 ), D2D1::SizeF( 150, 12 ) );
     modeLabel->AlignUnder( resolutionSlider, 5 );
     switch ( userLanguage ) {
-    case LANGUAGE_POLISH: modeLabel->SetCaption( L"Tryb [**]:" ); break;
-    default: modeLabel->SetCaption( L"Mode [**]:" ); break;
+    case LANGUAGE_POLISH: modeLabel->SetCaption( L"Tryb [*]:" ); break;
+    default: modeLabel->SetCaption( L"Mode [*]:" ); break;
     }
 
     modeSlider = new SV_Slider( MainView, MainPanel );
@@ -806,10 +806,13 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
     // The output format changes after restart; save the current HDR preference.
     d->InitialSettings.HDR_Monitor = settings.HDR_Monitor;
 
-    // Check for mode change
-    if ( d->CurrentWindowMode != d->ActiveWindowMode ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    const INT2 currentResolution = engine->GetResolution();
+    const INT2 selectedResolution = d->Resolutions.empty() ? currentResolution :
+        INT2( d->Resolutions[d->ResolutionSetting].Width, d->Resolutions[d->ResolutionSetting].Height );
+    const bool modeChanged = d->CurrentWindowMode != d->ActiveWindowMode;
+    if ( modeChanged && engine->RequestWindowMode( d->CurrentWindowMode, selectedResolution ) ) {
         d->ActiveWindowMode = d->CurrentWindowMode;
-        settings.ChangeWindowPreset = d->ActiveWindowMode;
     }
 
     // Reload shaders if necessary
@@ -818,8 +821,9 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
     }
 
 	// Check for resolution change
-	if ( d->Resolutions[d->ResolutionSetting].Width != Engine::GraphicsEngine->GetResolution().x || d->Resolutions[d->ResolutionSetting].Height != Engine::GraphicsEngine->GetResolution().y ) {
-		Engine::GraphicsEngine->OnResize( INT2(d->Resolutions[d->ResolutionSetting].Width, d->Resolutions[d->ResolutionSetting].Height) );
+    // A mode request also carries the selected resolution and runs after this callback.
+	if ( !modeChanged && (selectedResolution.x != currentResolution.x || selectedResolution.y != currentResolution.y) ) {
+		engine->OnResize( selectedResolution );
         // reposition the window at the center, 
         // or we might not be able to see it 
         if ( d->MainView->GetRenderTarget() ) {
@@ -834,6 +838,10 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
 bool D2DSettingsDialog::NeedsApply() {
 	GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
+    if ( CurrentWindowMode != ActiveWindowMode ) {
+        return true;
+    }
+
     if ( InitialSettings.HDR_Monitor != settings.HDR_Monitor ) {
         return true;
     }
@@ -844,7 +852,7 @@ bool D2DSettingsDialog::NeedsApply() {
 	}
 
 	// Check for resolution change
-	if ( Resolutions[ResolutionSetting].Width != Engine::GraphicsEngine->GetResolution().x || Resolutions[ResolutionSetting].Height != Engine::GraphicsEngine->GetResolution().y ) {
+	if ( !Resolutions.empty() && (Resolutions[ResolutionSetting].Width != Engine::GraphicsEngine->GetResolution().x || Resolutions[ResolutionSetting].Height != Engine::GraphicsEngine->GetResolution().y) ) {
 		return true;
 	}
 

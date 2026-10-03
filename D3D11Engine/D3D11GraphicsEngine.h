@@ -67,6 +67,9 @@ public:
     /** Get Window Mode */
     int GetWindowMode();
 
+    /** Apply a window mode and resolution after the current UI callback returns. */
+    bool RequestWindowMode( int mode, INT2 resolution );
+
     /** Called on window resize/resolution change */
     virtual XRESULT OnResize( INT2 newSize ) override;
 
@@ -346,6 +349,10 @@ public:
     float UpdateCustomFontMultiplierFontRendering( float multiplier );
 
 protected:
+    XRESULT ResizeSwapChain( INT2 newSize, bool recreate, HRESULT* exitFullscreenResult = nullptr );
+    XRESULT ApplyPendingWindowMode();
+    bool ConfigureOutputWindow( INT2 clientSize, const MONITORINFO& monitor );
+
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;
 
@@ -472,6 +479,14 @@ protected:
     bool m_flipWithTearing;
     bool m_swapchainflip;
     bool m_lowlatency;
+    int m_windowMode;
+    int m_pendingWindowMode;
+    INT2 m_pendingWindowResolution;
+    bool m_resizingSwapChain;
+    bool m_antTweakBarInitialized;
+    LONG m_windowedStyle;
+    LONG m_windowedExStyle;
+    RECT m_windowedRect;
     bool m_HDR;
     bool m_HDRSwapChain;
     bool m_HDRDesktopActive;

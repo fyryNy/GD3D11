@@ -101,6 +101,12 @@ protected:
     /** Create resources */
     HRESULT InitResources();
 
+    /** Creates brushes belonging to the current render target */
+    HRESULT InitRenderTargetResources();
+
+    /** Releases brushes before their render target */
+    void ReleaseRenderTargetResources();
+
     /** Checks dead message boxes and removes them */
     void CheckDeadMessageBoxes();
 

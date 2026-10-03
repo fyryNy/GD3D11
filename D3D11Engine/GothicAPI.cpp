@@ -4752,51 +4752,35 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
     }
 
     if ( s.ChangeWindowPreset ) {
-        WritePrivateProfileStringA( "General", "ChangeToMode", "0", ini.c_str() );
-        switch ( s.ChangeWindowPreset ) {
-            case WINDOW_MODE_FULLSCREEN_EXCLUSIVE: {
-                s.DisplayFlip = false;
-                s.StretchWindow = true;
-                zSTRING section( "VIDEO" ); zSTRING defValue( "0" );
-                zCOption::GetOptions()->WriteString( section, "zStartupWindowed", defValue );
-                WritePrivateProfileStringA( "Display", "DisplayFlip", "0", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "LowLatency", "0", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "StretchWindow", "1", ini.c_str() );
-                break;
-            }
-            case WINDOW_MODE_FULLSCREEN_BORDERLESS: {
-                s.DisplayFlip = true;
-                s.LowLatency = false;
-                s.StretchWindow = true;
-                WritePrivateProfileStringA( "Display", "DisplayFlip", "1", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "LowLatency", "0", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "StretchWindow", "1", ini.c_str() );
-                break;
-            }
-            case WINDOW_MODE_FULLSCREEN_LOWLATENCY: {
-                s.DisplayFlip = true;
-                s.LowLatency = true;
-                s.StretchWindow = true;
-                WritePrivateProfileStringA( "Display", "DisplayFlip", "1", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "LowLatency", "1", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "StretchWindow", "1", ini.c_str() );
-                break;
-            }
-            case WINDOW_MODE_WINDOWED: {
-                s.DisplayFlip = false;
-                s.StretchWindow = false;
-                zSTRING section( "VIDEO" ); zSTRING defValue( "1" );
-                zCOption::GetOptions()->WriteString( section, "zStartupWindowed", defValue );
-                WritePrivateProfileStringA( "Display", "DisplayFlip", "0", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "LowLatency", "0", ini.c_str() );
-                WritePrivateProfileStringA( "Display", "StretchWindow", "0", ini.c_str() );
-                break;
-            }
-        }
+        ApplyWindowPresetSettings( s.ChangeWindowPreset );
         s.ChangeWindowPreset = 0;
+        // Migrate the old restart-only preset without overwriting the loaded resolution.
+        WritePrivateProfileStringA( "General", "ChangeToMode", "0", ini.c_str() );
+        WritePrivateProfileStringA( "Display", "DisplayFlip", s.DisplayFlip ? "1" : "0", ini.c_str() );
+        WritePrivateProfileStringA( "Display", "LowLatency", s.LowLatency ? "1" : "0", ini.c_str() );
+        WritePrivateProfileStringA( "Display", "StretchWindow", s.StretchWindow ? "1" : "0", ini.c_str() );
     }
 
     return XR_SUCCESS;
+}
+
+/** Updates renderer and Gothic startup settings after a window-mode change */
+void GothicAPI::ApplyWindowPresetSettings( int mode ) {
+    if ( mode < WINDOW_MODE_FULLSCREEN_EXCLUSIVE || mode > WINDOW_MODE_WINDOWED ) {
+        return;
+    }
+
+    GothicRendererSettings& s = RendererState.RendererSettings;
+    s.DisplayFlip = mode == WINDOW_MODE_FULLSCREEN_BORDERLESS || mode == WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+    s.LowLatency = mode == WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+    s.StretchWindow = mode != WINDOW_MODE_WINDOWED;
+    s.ChangeWindowPreset = 0;
+
+    const bool windowed = mode != WINDOW_MODE_FULLSCREEN_EXCLUSIVE;
+    SetIntParamFromConfig( "zStartupWindowed", windowed ? 1 : 0 );
+    zSTRING section( "VIDEO" );
+    zSTRING value( windowed ? "1" : "0" );
+    zCOption::GetOptions()->WriteString( section, "zStartupWindowed", value );
 }
 
 /** Returns the main-thread id */

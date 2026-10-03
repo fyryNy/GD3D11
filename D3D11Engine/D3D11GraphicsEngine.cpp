@@ -4,6 +4,7 @@
 #include "BaseAntTweakBar.h"
 #include "D2DEditorView.h"
 #include "D2DView.h"
+#include "D2DSettingsDialog.h"
 #include "D3D11Effect.h"
 #include "D3D11GShader.h"
 #include "D3D11HDShader.h"
@@ -119,6 +120,14 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     m_HDRDisplayPeakNits = 1000.0f;
     m_HDRLastOutputCheck = 0;
     m_lowlatency = false;
+    m_windowMode = 0;
+    m_pendingWindowMode = 0;
+    m_pendingWindowResolution = INT2( 0, 0 );
+    m_resizingSwapChain = false;
+    m_antTweakBarInitialized = false;
+    m_windowedStyle = 0;
+    m_windowedExStyle = 0;
+    m_windowedRect = {};
     m_isWindowActive = false;
 
     // Match the resolution with the current desktop resolution
@@ -732,6 +741,25 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
     if ( !OutputWindow ) {
         LogInfo() << "Creating swapchain";
         OutputWindow = hWnd;
+        // The game may create a popup even when the renderer starts borderless.
+        // Keep a separate framed style for returning to a normal window.
+        m_windowedStyle = (GetWindowLongA( hWnd, GWL_STYLE ) & ~(WS_POPUP | WS_MINIMIZE | WS_MAXIMIZE)) | WS_OVERLAPPEDWINDOW;
+        m_windowedExStyle = GetWindowLongA( hWnd, GWL_EXSTYLE ) & ~WS_EX_TOPMOST;
+        if ( GetWindowLongA( hWnd, GWL_STYLE ) & WS_CAPTION )
+            GetWindowRect( hWnd, &m_windowedRect );
+
+        const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+        const bool windowed = Engine::GAPI->HasCommandlineParameter( "ZWINDOW" )
+            || Engine::GAPI->GetIntParamFromConfig( "zStartupWindowed" );
+        m_windowMode = settings.DisplayFlip
+            ? (settings.LowLatency ? WINDOW_MODE_FULLSCREEN_LOWLATENCY : WINDOW_MODE_FULLSCREEN_BORDERLESS)
+            : (windowed ? WINDOW_MODE_WINDOWED : WINDOW_MODE_FULLSCREEN_EXCLUSIVE);
+#ifdef BUILD_SPACER
+        m_windowMode = WINDOW_MODE_WINDOWED;
+#endif
+#ifdef BUILD_SPACER_NET
+        if ( settings.RunInSpacerNet ) m_windowMode = WINDOW_MODE_WINDOWED;
+#endif
 
         // Force activate the window on startup
         {
@@ -759,7 +787,11 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
         res.x = r.right;
         res.y = r.bottom;
 #endif
-        if ( res.x != 0 && res.y != 0 ) OnResize( res );
+        if ( res.x != 0 && res.y != 0 && XR_SUCCESS != OnResize( res ) ) {
+            LogWarn() << "Startup display mode unavailable; trying a normal window.";
+            m_windowMode = WINDOW_MODE_WINDOWED;
+            if ( XR_SUCCESS != ResizeSwapChain( res, true ) ) return XR_FAILED;
+        }
 
 #ifndef BUILD_SPACER_NET
 
@@ -788,30 +820,167 @@ DXGI_FORMAT D3D11GraphicsEngine::GetBackBufferFormat() {
 
 /** Get Window Mode */
 int D3D11GraphicsEngine::GetWindowMode() {
+    if ( m_pendingWindowMode ) return m_pendingWindowMode;
     if ( SwapChain.Get() ) {
         BOOL isFullscreen = 0;
-        if ( SwapChain.Get() ) SwapChain->GetFullscreenState( &isFullscreen, nullptr );
-
-        if ( isFullscreen ) {
+        if ( SUCCEEDED( SwapChain->GetFullscreenState( &isFullscreen, nullptr ) ) && isFullscreen ) {
             return WINDOW_MODE_FULLSCREEN_EXCLUSIVE;
         }
     }
+    // HDR also uses flip presentation in a framed window.
+    return m_windowMode == WINDOW_MODE_FULLSCREEN_EXCLUSIVE ? WINDOW_MODE_WINDOWED : m_windowMode;
+}
 
-    if ( m_swapchainflip ) {
-        if ( m_lowlatency ) {
-            return WINDOW_MODE_FULLSCREEN_LOWLATENCY;
-        } else {
-            return WINDOW_MODE_FULLSCREEN_BORDERLESS;
+bool D3D11GraphicsEngine::RequestWindowMode( int mode, INT2 resolution ) {
+#ifdef BUILD_SPACER
+    return false; // The editor owns its embedded window.
+#else
+#ifdef BUILD_SPACER_NET
+    if ( Engine::GAPI->GetRendererState().RendererSettings.RunInSpacerNet ) return false;
+#endif
+    if ( !SwapChain || mode < WINDOW_MODE_FULLSCREEN_EXCLUSIVE || mode > WINDOW_MODE_WINDOWED
+        || resolution.x <= 0 || resolution.y <= 0 ) return false;
+    m_pendingWindowMode = mode;
+    m_pendingWindowResolution = resolution;
+    return true;
+#endif
+}
+
+XRESULT D3D11GraphicsEngine::ApplyPendingWindowMode() {
+    if ( !m_pendingWindowMode || !m_isWindowActive || IsIconic( OutputWindow )
+        || GetCurrentThreadId() != Engine::GAPI->GetMainThreadID() ) return XR_SUCCESS;
+
+    const int previousMode = m_windowMode;
+    const INT2 previousResolution = Resolution;
+    if ( previousMode == WINDOW_MODE_WINDOWED ) GetWindowRect( OutputWindow, &m_windowedRect );
+    const RECT previousWindowedRect = m_windowedRect;
+    m_windowMode = m_pendingWindowMode;
+    const int requestedMode = m_pendingWindowMode;
+    const INT2 requestedResolution = m_pendingWindowResolution;
+    m_pendingWindowMode = 0;
+
+    HRESULT exitFullscreenResult = S_OK;
+    if ( XR_SUCCESS != ResizeSwapChain( requestedResolution, true, &exitFullscreenResult ) ) {
+        if ( exitFullscreenResult != S_OK ) {
+            // Nothing has been released yet. Keep rendering the original chain
+            // while DXGI completes an outstanding transition or regains focus.
+            m_windowMode = previousMode;
+            if ( exitFullscreenResult == DXGI_STATUS_MODE_CHANGE_IN_PROGRESS
+                || exitFullscreenResult == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE ) {
+                m_pendingWindowMode = requestedMode;
+            } else {
+                LogWarn() << "Cannot leave exclusive mode; keeping the current display: " << exitFullscreenResult;
+                if ( UIView && UIView->GetRenderTarget() )
+                    static_cast<D2DSettingsDialog*>(UIView->GetSettingsDialog())->OnOpenedSettings();
+            }
+            return XR_SUCCESS;
+        }
+        LogWarn() << "Display mode change failed; restoring the previous mode.";
+        m_windowMode = previousMode;
+        m_windowedRect = previousWindowedRect;
+        if ( XR_SUCCESS != ResizeSwapChain( previousResolution, true ) ) {
+            LogWarn() << "Previous display mode unavailable; recovering in a normal window.";
+            m_windowMode = WINDOW_MODE_WINDOWED;
+            if ( XR_SUCCESS != ResizeSwapChain( previousResolution, true ) ) {
+                LogErrorBox() << "Could not recover the display after changing window mode.";
+                exit( 0 );
+            }
         }
     }
-    return WINDOW_MODE_WINDOWED;
+
+    // Persist the mode that was actually created, including capability fallbacks.
+    Engine::GAPI->ApplyWindowPresetSettings( m_windowMode );
+    Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
+    LogInfo() << "Applied window mode " << m_windowMode << " at " << Resolution.toString();
+    if ( UIView && UIView->GetRenderTarget() ) {
+        auto* dialog = static_cast<D2DSettingsDialog*>(UIView->GetSettingsDialog());
+        dialog->OnOpenedSettings();
+        const auto size = UIView->GetRenderTarget()->GetSize();
+        dialog->SetPositionCentered( D2D1::Point2F( size.width / 2, size.height / 2 ), dialog->GetSize() );
+    }
+    UpdateClipCursor( OutputWindow );
+    return XR_SUCCESS;
+}
+
+bool D3D11GraphicsEngine::ConfigureOutputWindow( INT2 clientSize, const MONITORINFO& monitor ) {
+#ifndef BUILD_SPACER
+#ifdef BUILD_SPACER_NET
+    if ( Engine::GAPI->GetRendererState().RendererSettings.RunInSpacerNet ) return true;
+#endif
+    const bool windowed = m_windowMode == WINDOW_MODE_WINDOWED;
+    const LONG style = windowed ? m_windowedStyle
+        : (m_windowedStyle & ~WS_OVERLAPPEDWINDOW) | WS_POPUP;
+    const LONG exStyle = windowed ? m_windowedExStyle
+        : m_windowedExStyle & ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+    SetLastError( 0 );
+    if ( !SetWindowLongA( OutputWindow, GWL_STYLE, style ) && GetLastError() ) return false;
+    SetLastError( 0 );
+    if ( !SetWindowLongA( OutputWindow, GWL_EXSTYLE, exStyle ) && GetLastError() ) return false;
+
+    RECT bounds = monitor.rcMonitor;
+    if ( windowed ) {
+        bounds = { 0, 0, clientSize.x, clientSize.y };
+        if ( !AdjustWindowRectEx( &bounds, style, GetMenu( OutputWindow ) != nullptr, exStyle ) ) return false;
+        const RECT& work = monitor.rcWork;
+        // Keep the title bar and window controls reachable even when rendering
+        // at desktop resolution. DXGI scales the selected render size to fit.
+        const LONG width = std::min( bounds.right - bounds.left, work.right - work.left );
+        const LONG height = std::min( bounds.bottom - bounds.top, work.bottom - work.top );
+        LONG x = m_windowedRect.right > m_windowedRect.left ? m_windowedRect.left
+            : work.left + (work.right - work.left - width) / 2;
+        LONG y = m_windowedRect.bottom > m_windowedRect.top ? m_windowedRect.top
+            : work.top + (work.bottom - work.top - height) / 2;
+        x = std::max( work.left, std::min( x, work.right - width ) );
+        y = std::max( work.top, std::min( y, work.bottom - height ) );
+        bounds = { x, y, x + width, y + height };
+    }
+    if ( !SetWindowPos( OutputWindow, HWND_NOTOPMOST, bounds.left, bounds.top,
+        bounds.right - bounds.left, bounds.bottom - bounds.top,
+        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW ) ) return false;
+    if ( windowed ) GetWindowRect( OutputWindow, &m_windowedRect );
+#endif
+    return true;
 }
 
 /** Called on window resize/resolution change */
 XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
+    // SetWindowPos/SetFullscreenState can synchronously dispatch window messages.
+    if ( m_resizingSwapChain ) return XR_SUCCESS;
+    if ( newSize.x <= 0 || newSize.y <= 0 ) return XR_FAILED;
+    if ( m_pendingWindowMode ) {
+        m_pendingWindowResolution = newSize;
+        return XR_SUCCESS;
+    }
+    if ( m_windowMode == WINDOW_MODE_WINDOWED ) GetWindowRect( OutputWindow, &m_windowedRect );
+    return ResizeSwapChain( newSize, false );
+}
+
+XRESULT D3D11GraphicsEngine::ResizeSwapChain( INT2 newSize, bool recreate, HRESULT* exitFullscreenResult ) {
     HRESULT hr;
-    if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain.Get() )
+    if ( exitFullscreenResult ) *exitFullscreenResult = S_OK;
+    if ( newSize.x <= 0 || newSize.y <= 0 ) return XR_FAILED;
+    if ( !recreate && memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain.Get() )
         return XR_SUCCESS;  // Don't resize if we don't have to
+
+    struct ResizeGuard {
+        bool& active;
+        ResizeGuard( bool& value ) : active( value ) { active = true; }
+        ~ResizeGuard() { active = false; }
+    } guard( m_resizingSwapChain );
+
+    const HMONITOR targetMonitor = MonitorFromWindow( OutputWindow, MONITOR_DEFAULTTONEAREST );
+    if ( recreate && SwapChain ) {
+        BOOL exclusive = FALSE;
+        hr = SwapChain->GetFullscreenState( &exclusive, nullptr );
+        if ( SUCCEEDED( hr ) && exclusive ) hr = SwapChain->SetFullscreenState( FALSE, nullptr );
+        if ( hr != S_OK ) {
+            if ( exitFullscreenResult && BackbufferRTV ) *exitFullscreenResult = hr;
+            return XR_FAILED;
+        }
+    }
+    // Exclusive mode may restore a different desktop resolution when it exits.
+    MONITORINFO monitor = { sizeof( MONITORINFO ) };
+    if ( !GetMonitorInfoA( targetMonitor, &monitor ) ) return XR_FAILED;
 
     Resolution = newSize;
     INT2 bbres = GetBackbufferResolution();
@@ -836,24 +1005,9 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         newMode.Height = newSize.y;
         newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
         newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
-        newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        SwapChain->ResizeTarget( &newMode );
-
-        RECT desktopRect;
-        GetClientRect( GetDesktopWindow(), &desktopRect );
-        SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW );
-    } else if ( Engine::GAPI->GetRendererState().RendererSettings.StretchWindow ) {
-        RECT desktopRect;
-        GetClientRect( GetDesktopWindow(), &desktopRect );
-        SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW );
-    } else {
-        RECT rect;
-        if ( GetWindowRect( OutputWindow, &rect ) ) {
-            SetWindowPos( OutputWindow, nullptr, rect.left, rect.top, bbres.x, bbres.y, SWP_SHOWWINDOW );
-        } else {
-            SetWindowPos( OutputWindow, nullptr, 0, 0, bbres.x, bbres.y, SWP_SHOWWINDOW );
-        }
-    }
+        newMode.Format = m_HDRSwapChain ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
+        if ( SwapChain->ResizeTarget( &newMode ) != S_OK ) return XR_FAILED;
+    } else if ( !ConfigureOutputWindow( bbres, monitor ) ) return XR_FAILED;
 #endif
 
     // Release all referenced buffer resources before we can resize the swapchain. Needed!
@@ -868,11 +1022,23 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     HDRUIWhite.reset();
     HDRD2DUI.reset();
 
-    UINT scflags = m_flipWithTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-    if ( m_lowlatency ) scflags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+    UINT scflags = 0;
     if ( frameLatencyWaitableObject ) {
         CloseHandle( frameLatencyWaitableObject );
         frameLatencyWaitableObject = nullptr;
+    }
+    if ( recreate ) {
+        SwapChain.Reset();
+        GetContext()->ClearState();
+        GetContext()->Flush(); // Force destruction before associating a replacement with this HWND.
+        // ClearState also removes bindings that are normally made only in Init.
+        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        GetContext()->VSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        GetContext()->DSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        GetContext()->HSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        GetContext()->PSSetSamplers( 2, 1, ShadowmapSamplerState.GetAddressOf() );
+        GetContext()->VSSetSamplers( 2, 1, ShadowmapSamplerState.GetAddressOf() );
+        SetDefaultStates( true );
     }
 
     if ( !SwapChain.Get() ) {
@@ -882,22 +1048,15 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD, "DXGI_SWAP_EFFECT_FLIP_DISCARD"},
         };
 
-        m_swapchainflip = Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip;
+        m_swapchainflip = m_windowMode == WINDOW_MODE_FULLSCREEN_BORDERLESS
+            || m_windowMode == WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+        m_flipWithTearing = false;
         Microsoft::WRL::ComPtr<IDXGIFactory4> hdrFactory;
         // Native HDR requires Windows 10 flip presentation. Older systems keep
         // their existing SDR path, including Windows 7's discard swapchain.
         m_HDRSwapChain = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor
             && SUCCEEDED( DXGIFactory2.As( &hdrFactory ) );
         if ( m_HDRSwapChain ) m_swapchainflip = true;
-        if ( m_swapchainflip ) {
-            LONG lStyle = GetWindowLongA( OutputWindow, GWL_STYLE );
-            lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
-            SetWindowLongA( OutputWindow, GWL_STYLE, lStyle );
-
-            LONG lExStyle = GetWindowLongA( OutputWindow, GWL_EXSTYLE );
-            lExStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
-            SetWindowLongA( OutputWindow, GWL_EXSTYLE, lExStyle );
-        }
 
         DXGI_SWAP_CHAIN_DESC1 scd = {};
         DXGI_SWAP_EFFECT swapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD;
@@ -906,7 +1065,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             if ( SUCCEEDED( DXGIFactory2.As( &factory5 ) ) ) {
                 BOOL allowTearing = FALSE;
                 if ( factory5.Get() && SUCCEEDED( factory5->CheckFeatureSupport( DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof( allowTearing ) ) ) ) {
-                    m_flipWithTearing = allowTearing != 0;
+                    m_flipWithTearing = allowTearing != 0 && m_windowMode != WINDOW_MODE_FULLSCREEN_EXCLUSIVE;
                 }
             }
 
@@ -925,15 +1084,15 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         LogInfo() << "Creating new swapchain: " << (m_HDRSwapChain ? "FP16 scRGB" : "BGRA8 SDR");
 
+        scflags = m_flipWithTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
         if ( m_swapchainflip ) {
             scd.BufferCount = 2;
-            if ( m_flipWithTearing ) scflags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
         } else {
             scd.BufferCount = 1;
         }
 
         Microsoft::WRL::ComPtr<IDXGIDevice3> pDXGIDevice3;
-        m_lowlatency = Engine::GAPI->GetRendererState().RendererSettings.LowLatency;
+        m_lowlatency = m_windowMode == WINDOW_MODE_FULLSCREEN_LOWLATENCY;
         if ( FAILED( Device.As( &pDXGIDevice3 ) ) // DXGI 1.3 required
             || swapEffect == DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD ) { // Doesn't work with fullscreen exclusive on D3D11
             m_lowlatency = false;
@@ -958,38 +1117,61 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             m_HDRSwapChain = false;
             scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
             SwapChain.Reset();
+            GetContext()->Flush();
             hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
         }
         if ( FAILED( hr ) ) {
-            LogError() << "Failed to create Swapchain! Program will now exit!";
-            exit( 0 );
-        }
-
-        if ( m_swapchainflip ) {
-            LE( DXGIFactory2->MakeWindowAssociation( OutputWindow, DXGI_MWA_NO_WINDOW_CHANGES ) );
-        } else {
-            // Perform fullscreen transition
-            // According to microsoft guide it is the best practice
-            // because the swapchain is created in accordance to desktop resolution
-            // and we can have different resolution in fullscreen exclusive
-            bool windowed = Engine::GAPI->HasCommandlineParameter( "ZWINDOW" ) ||
-                Engine::GAPI->GetIntParamFromConfig( "zStartupWindowed" );
-            if ( !windowed ) {
-                DXGI_MODE_DESC newMode = {};
-                newMode.Width = newSize.x;
-                newMode.Height = newSize.y;
-                newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
-                newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
-                newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-                SwapChain->ResizeTarget( &newMode );
-                SwapChain->SetFullscreenState( true, nullptr );
+            // Windows 7 cannot create flip swapchains. The window can still be
+            // borderless with legacy presentation, and a rejected waitable flag
+            // must not leave the player without a working display.
+            if ( m_swapchainflip ) {
+                LogWarn() << "Flip presentation unavailable; trying legacy SDR presentation.";
+                SwapChain.Reset();
+                GetContext()->Flush();
+                m_HDRSwapChain = false;
+                m_swapchainflip = false;
+                m_flipWithTearing = false;
+                m_lowlatency = false;
+                scflags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+                scd.Flags = scflags;
+                scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+                scd.BufferCount = 1;
+                scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
+            }
+            if ( FAILED( hr ) ) {
+                LogError() << "Failed to create the requested swapchain: " << hr;
+                return XR_FAILED;
             }
         }
 
-        // Need to init AntTweakBar now that we have a working swapchain
-        XLE( Engine::AntTweakBar->Init() );
+        if ( m_windowMode == WINDOW_MODE_FULLSCREEN_LOWLATENCY && !m_lowlatency )
+            m_windowMode = WINDOW_MODE_FULLSCREEN_BORDERLESS;
+        LE( DXGIFactory2->MakeWindowAssociation( OutputWindow, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER ) );
+        if ( m_windowMode == WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
+            DXGI_MODE_DESC newMode = {};
+            newMode.Width = newSize.x;
+            newMode.Height = newSize.y;
+            newMode.RefreshRate = CachedRefreshRate;
+            newMode.Format = scd.Format;
+            if ( SwapChain->ResizeTarget( &newMode ) != S_OK
+                || SwapChain->SetFullscreenState( TRUE, nullptr ) != S_OK
+                || FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, scd.Format, scflags ) ) ) {
+                LogWarn() << "The requested exclusive display mode is unavailable.";
+                return XR_FAILED;
+            }
+        }
+
+        // Replacing a swapchain must preserve the existing tweak bars and their values.
+        if ( !m_antTweakBarInitialized ) {
+            if ( XR_SUCCESS != Engine::AntTweakBar->Init() ) return XR_FAILED;
+            m_antTweakBarInitialized = true;
+        }
 
     } else {
+        DXGI_SWAP_CHAIN_DESC1 currentDesc = {};
+        if ( FAILED( SwapChain->GetDesc1( &currentDesc ) ) ) return XR_FAILED;
+        scflags = currentDesc.Flags; // Creation-only flags must survive ResizeBuffers unchanged.
         LogInfo() << "Resizing swapchain: " << (m_HDRSwapChain ? "FP16 scRGB" : "BGRA8 SDR");
         if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y,
             m_HDRSwapChain ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
@@ -1016,10 +1198,10 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
     }
     UpdateColorSpace_SwapChain();
-    SwapChain->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
+    if ( FAILED( SwapChain->GetBuffer( 0, IID_PPV_ARGS( backbuffer.GetAddressOf() ) ) ) ) return XR_FAILED;
 
     // Recreate RenderTargetView
-    LE( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) );
+    if ( FAILED( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) ) ) return XR_FAILED;
 
     if ( m_HDRSwapChain ) {
         HDRUIBlack = std::make_unique<RenderToTextureBuffer>( GetDevice(), bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM );
@@ -1044,7 +1226,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             if ( SUCCEEDED( hr ) ) hr = GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() );
             if ( FAILED( hr ) ) {
                 LogError() << "Failed to recover the SDR swapchain after HDR surface allocation failure.";
-                exit( 0 );
+                return XR_FAILED;
             }
             UpdateColorSpace_SwapChain();
         }
@@ -1118,6 +1300,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
+    XLE( ApplyPendingWindowMode() );
     m_HDRSceneRendered = false;
     // Refresh after Windows HDR changes, hotplug, or moving to another monitor.
     const DWORD outputCheckTime = GetTickCount();
@@ -1552,7 +1735,9 @@ XRESULT D3D11GraphicsEngine::Present() {
     }
 
     HRESULT hr;
-    if ( m_flipWithTearing ) {
+    BOOL exclusive = FALSE;
+    SwapChain->GetFullscreenState( &exclusive, nullptr );
+    if ( m_flipWithTearing && !exclusive ) {
         hr = SwapChain->Present( vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING );
     } else {
         hr = SwapChain->Present( vsync ? 1 : 0, 0 );

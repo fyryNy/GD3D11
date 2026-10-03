@@ -42,14 +42,8 @@ D2DView::D2DView() {
 D2DView::~D2DView() {
     delete MainSubView;
 
+    ReleaseRenderTargetResources();
     SAFE_RELEASE( TextFormatBig );
-    SAFE_RELEASE( LinearReflectBrush );
-    SAFE_RELEASE( LinearReflectBrushHigh );
-    SAFE_RELEASE( Brush );
-    SAFE_RELEASE( GUIStyleLinearBrush );
-    SAFE_RELEASE( LinearBrush );
-    SAFE_RELEASE( RadialBrush );
-    SAFE_RELEASE( BackgroundBrush );
     SAFE_RELEASE( DefaultTextFormat );
     SAFE_RELEASE( WriteFactory );
     SAFE_RELEASE( RenderTarget );
@@ -58,6 +52,7 @@ D2DView::~D2DView() {
 
 /** Inits this d2d-view */
 XRESULT D2DView::Init( const INT2& initialResolution, ID3D11Texture2D* rendertarget ) {
+    if ( !rendertarget ) return XR_FAILED;
     static const GUID IID_IDXGIVkInteropSurface = { 0x5546CF8C, 0x77E7, 0x4341, { 0xB0, 0x5D, 0x8D, 0x4D, 0x50, 0x00, 0xE7, 0x7D } };
 
     typedef HRESULT( WINAPI* PFN_D2D1CreateFactory )(D2D1_FACTORY_TYPE factory_type, REFIID riid, const D2D1_FACTORY_OPTIONS* factory_options, void** factory);
@@ -117,18 +112,27 @@ XRESULT D2DView::Init( const INT2& initialResolution, ID3D11Texture2D* rendertar
             "You can get it here: https://www.microsoft.com/en-us/download/details.aspx?id=36805 \n"
             "This will not crash the Renderer, but you will have to continue without editor-features.\n"
             "\nThe link has been copied to your clipboard.";
-        SAFE_RELEASE( dxgiBackbuffer );
+        PrepareResize();
+        dxgiBackbuffer.Reset();
         Factory->Release();
         Factory = nullptr;
         return XR_FAILED;
     }
 
-    return InitResources() == S_OK ? XR_SUCCESS : XR_FAILED;
+    if ( FAILED( InitResources() ) ) {
+        PrepareResize();
+        return XR_FAILED;
+    }
+    return XR_SUCCESS;
 }
 
-/** Create resources */
-HRESULT D2DView::InitResources() {
-    RenderTarget->CreateSolidColorBrush( D2D1::ColorF( D2D1::ColorF::White ), &Brush );
+/** Creates brushes belonging to the current render target */
+HRESULT D2DView::InitRenderTargetResources() {
+    ReleaseRenderTargetResources();
+    if ( !RenderTarget ) return E_FAIL;
+
+    HRESULT hr = RenderTarget->CreateSolidColorBrush( D2D1::ColorF( D2D1::ColorF::White ), &Brush );
+    if ( FAILED( hr ) ) return hr;
 
     // Create a linear gradient.
     D2D1_GRADIENT_STOP stops[4];
@@ -144,27 +148,30 @@ HRESULT D2DView::InitResources() {
     stops[3].color = D2D1::ColorF( 0, 0, 0, 0 );
     stops[3].position = 1.0f;
 
-    ID2D1GradientStopCollection* pGradientStops;
-    RenderTarget->CreateGradientStopCollection(
+    Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> pGradientStops;
+    hr = RenderTarget->CreateGradientStopCollection(
         stops,
         ARRAYSIZE( stops ),
-        &pGradientStops
+        pGradientStops.ReleaseAndGetAddressOf()
     );
+    if ( FAILED( hr ) ) return hr;
 
     if ( pGradientStops ) {
-        RenderTarget->CreateLinearGradientBrush(
+        hr = RenderTarget->CreateLinearGradientBrush(
             D2D1::LinearGradientBrushProperties(
                 D2D1::Point2F( 100, 0 ),
                 D2D1::Point2F( 100, 200 )
             ),
             D2D1::BrushProperties(),
-            pGradientStops,
+            pGradientStops.Get(),
             &LinearBrush
         );
+        if ( FAILED( hr ) ) return hr;
 
-        RenderTarget->CreateRadialGradientBrush( D2D1::RadialGradientBrushProperties( D2D1::Point2F( 0, 0 ), D2D1::Point2F( 0, 0 ), 1, 1 ), pGradientStops, &RadialBrush );
+        hr = RenderTarget->CreateRadialGradientBrush( D2D1::RadialGradientBrushProperties( D2D1::Point2F( 0, 0 ), D2D1::Point2F( 0, 0 ), 1, 1 ), pGradientStops.Get(), &RadialBrush );
+        if ( FAILED( hr ) ) return hr;
 
-        SAFE_RELEASE( pGradientStops );
+        pGradientStops.Reset();
     }
 
     D2D1_GRADIENT_STOP GUISstops[3];
@@ -177,25 +184,27 @@ HRESULT D2DView::InitResources() {
     GUISstops[2].color = D2D1::ColorF( GUI_Color3.r, GUI_Color3.g, GUI_Color3.b, GUI_Color3.a );
     GUISstops[2].position = 1.0f;
 
-    ID2D1GradientStopCollection* pGUI_S_GradientStops;
-    RenderTarget->CreateGradientStopCollection(
+    Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> pGUI_S_GradientStops;
+    hr = RenderTarget->CreateGradientStopCollection(
         GUISstops,
         ARRAYSIZE( GUISstops ),
-        &pGUI_S_GradientStops
+        pGUI_S_GradientStops.ReleaseAndGetAddressOf()
     );
+    if ( FAILED( hr ) ) return hr;
 
     if ( pGUI_S_GradientStops ) {
-        RenderTarget->CreateLinearGradientBrush(
+        hr = RenderTarget->CreateLinearGradientBrush(
             D2D1::LinearGradientBrushProperties(
                 D2D1::Point2F( 100, 0 ),
                 D2D1::Point2F( 100, 200 )
             ),
             D2D1::BrushProperties(),
-            pGUI_S_GradientStops,
+            pGUI_S_GradientStops.Get(),
             &GUIStyleLinearBrush
         );
+        if ( FAILED( hr ) ) return hr;
 
-        SAFE_RELEASE( pGUI_S_GradientStops );
+        pGUI_S_GradientStops.Reset();
     }
 
     D2D1_GRADIENT_STOP Reflectstops[4];
@@ -211,25 +220,27 @@ HRESULT D2DView::InitResources() {
     Reflectstops[3].color = D2D1::ColorF( ReflectColor2.r, ReflectColor2.g, ReflectColor2.b, ReflectColor2.a );
     Reflectstops[3].position = 1.0f;
 
-    ID2D1GradientStopCollection* pReflectGradientStops;
-    RenderTarget->CreateGradientStopCollection(
+    Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> pReflectGradientStops;
+    hr = RenderTarget->CreateGradientStopCollection(
         Reflectstops,
         ARRAYSIZE( Reflectstops ),
-        &pReflectGradientStops
+        pReflectGradientStops.ReleaseAndGetAddressOf()
     );
+    if ( FAILED( hr ) ) return hr;
 
     if ( pReflectGradientStops ) {
-        RenderTarget->CreateLinearGradientBrush(
+        hr = RenderTarget->CreateLinearGradientBrush(
             D2D1::LinearGradientBrushProperties(
                 D2D1::Point2F( 100, 0 ),
                 D2D1::Point2F( 100, 200 )
             ),
             D2D1::BrushProperties(),
-            pReflectGradientStops,
+            pReflectGradientStops.Get(),
             &LinearReflectBrush
         );
+        if ( FAILED( hr ) ) return hr;
 
-        SAFE_RELEASE( pReflectGradientStops );
+        pReflectGradientStops.Reset();
     }
 
     Reflectstops[0].color = D2D1::ColorF( ReflectColor2.r, ReflectColor2.g, ReflectColor2.b, ReflectColor2.a );
@@ -244,24 +255,26 @@ HRESULT D2DView::InitResources() {
     Reflectstops[3].color = D2D1::ColorF( ReflectColor2.r, ReflectColor2.g, ReflectColor2.b, ReflectColor2.a );
     Reflectstops[3].position = 1.0f;
 
-    RenderTarget->CreateGradientStopCollection(
+    hr = RenderTarget->CreateGradientStopCollection(
         Reflectstops,
         ARRAYSIZE( Reflectstops ),
-        &pReflectGradientStops
+        pReflectGradientStops.ReleaseAndGetAddressOf()
     );
+    if ( FAILED( hr ) ) return hr;
 
     if ( pReflectGradientStops ) {
-        RenderTarget->CreateLinearGradientBrush(
+        hr = RenderTarget->CreateLinearGradientBrush(
             D2D1::LinearGradientBrushProperties(
                 D2D1::Point2F( 100, 0 ),
                 D2D1::Point2F( 100, 200 )
             ),
             D2D1::BrushProperties(),
-            pReflectGradientStops,
+            pReflectGradientStops.Get(),
             &LinearReflectBrushHigh
         );
+        if ( FAILED( hr ) ) return hr;
 
-        SAFE_RELEASE( pReflectGradientStops );
+        pReflectGradientStops.Reset();
     }
 
     D2D1_GRADIENT_STOP bgrstops[2];
@@ -271,30 +284,53 @@ HRESULT D2DView::InitResources() {
     bgrstops[1].color = DefBackgroundColor2;
     bgrstops[1].position = 1.5f;
 
-    RenderTarget->CreateGradientStopCollection(
+    hr = RenderTarget->CreateGradientStopCollection(
         bgrstops,
         ARRAYSIZE( bgrstops ),
-        &pGradientStops
+        pGradientStops.ReleaseAndGetAddressOf()
     );
+    if ( FAILED( hr ) ) return hr;
 
     if ( pGradientStops ) {
-        RenderTarget->CreateLinearGradientBrush(
+        hr = RenderTarget->CreateLinearGradientBrush(
             D2D1::LinearGradientBrushProperties(
                 D2D1::Point2F( 100, 0 ),
                 D2D1::Point2F( 100, 200 )
             ),
             D2D1::BrushProperties(),
-            pGradientStops,
+            pGradientStops.Get(),
             &BackgroundBrush
         );
+        if ( FAILED( hr ) ) return hr;
 
-        SAFE_RELEASE( pGradientStops );
+        pGradientStops.Reset();
     }
 
-    DWriteCreateFactory( DWRITE_FACTORY_TYPE_SHARED, __uuidof(WriteFactory), reinterpret_cast<IUnknown**>(&WriteFactory) );
+    return Brush && LinearBrush && RadialBrush && GUIStyleLinearBrush
+        && LinearReflectBrush && LinearReflectBrushHigh && BackgroundBrush ? S_OK : E_FAIL;
+}
+
+/** Releases brushes before their render target */
+void D2DView::ReleaseRenderTargetResources() {
+    SAFE_RELEASE( LinearReflectBrush );
+    SAFE_RELEASE( LinearReflectBrushHigh );
+    SAFE_RELEASE( Brush );
+    SAFE_RELEASE( GUIStyleLinearBrush );
+    SAFE_RELEASE( LinearBrush );
+    SAFE_RELEASE( RadialBrush );
+    SAFE_RELEASE( BackgroundBrush );
+}
+
+/** Creates the view's persistent controls and text resources */
+HRESULT D2DView::InitResources() {
+    HRESULT hr = InitRenderTargetResources();
+    if ( FAILED( hr ) ) return hr;
+
+    hr = DWriteCreateFactory( DWRITE_FACTORY_TYPE_SHARED, __uuidof(WriteFactory), reinterpret_cast<IUnknown**>(&WriteFactory) );
+    if ( FAILED( hr ) || !WriteFactory ) return FAILED( hr ) ? hr : E_FAIL;
 
     // create the DWrite text format
-    WriteFactory->CreateTextFormat(
+    hr = WriteFactory->CreateTextFormat(
         L"Arial",
         nullptr,
         DWRITE_FONT_WEIGHT_NORMAL,
@@ -303,11 +339,12 @@ HRESULT D2DView::InitResources() {
         14,
         L"",
         &DefaultTextFormat );
+    if ( FAILED( hr ) || !DefaultTextFormat ) return FAILED( hr ) ? hr : E_FAIL;
 
     DefaultTextFormat->SetTextAlignment( DWRITE_TEXT_ALIGNMENT_CENTER );
     DefaultTextFormat->SetParagraphAlignment( DWRITE_PARAGRAPH_ALIGNMENT_CENTER );
 
-    WriteFactory->CreateTextFormat(
+    hr = WriteFactory->CreateTextFormat(
         L"Arial",
         nullptr,
         DWRITE_FONT_WEIGHT_NORMAL,
@@ -316,6 +353,7 @@ HRESULT D2DView::InitResources() {
         16,
         L"",
         &TextFormatBig );
+    if ( FAILED( hr ) || !TextFormatBig ) return FAILED( hr ) ? hr : E_FAIL;
 
     MainSubView = new D2DSubView( this, nullptr );
     MainSubView->SetRect( D2D1::RectF( 0, 0, RenderTarget->GetSize().width, RenderTarget->GetSize().height ) );
@@ -331,6 +369,7 @@ HRESULT D2DView::InitResources() {
 
 /** Draws the view */
 void D2DView::Render( float deltaTime ) {
+    if ( !RenderTarget || !EditorView || !MainSubView ) return;
     if ( !EditorView->IsHidden() ) {
         RenderTarget->BeginDraw();
 
@@ -350,6 +389,8 @@ void D2DView::Update( float deltaTime ) {
 
 /** Releases all resources needed to resize this view */
 XRESULT D2DView::PrepareResize() {
+    if ( MainSubView ) MainSubView->PrepareResize();
+    ReleaseRenderTargetResources();
     SAFE_RELEASE( RenderTarget );
 
     return XR_SUCCESS;
@@ -357,16 +398,19 @@ XRESULT D2DView::PrepareResize() {
 
 /** Resizes this d2d-view */
 XRESULT D2DView::Resize( const INT2& initialResolution, ID3D11Texture2D* rendertarget ) {
+    PrepareResize();
+    if ( !Factory || !rendertarget || !MainSubView || !EditorView ) return XR_FAILED;
 
     Microsoft::WRL::ComPtr<IDXGISurface2> dxgiBackbuffer;
-    rendertarget->QueryInterface( dxgiBackbuffer.GetAddressOf() );
+    HRESULT hr = rendertarget->QueryInterface( dxgiBackbuffer.GetAddressOf() );
 
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties( D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat( DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED ) );
-    if ( !dxgiBackbuffer.Get() ) {
+    if ( FAILED( hr ) || !dxgiBackbuffer.Get() ) {
         return XR_FAILED;
     }
-    Factory->CreateDxgiSurfaceRenderTarget( dxgiBackbuffer.Get(), props, &RenderTarget );
-    if ( !RenderTarget ) {
+    hr = Factory->CreateDxgiSurfaceRenderTarget( dxgiBackbuffer.Get(), props, &RenderTarget );
+    if ( FAILED( hr ) || !RenderTarget || FAILED( InitRenderTargetResources() ) ) {
+        PrepareResize();
         return XR_FAILED;
     }
 

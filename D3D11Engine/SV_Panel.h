@@ -1,5 +1,6 @@
 #pragma once
 #include "d2dsubview.h"
+#include <wrl/client.h>
 
 class D3D11Texture;
 
@@ -35,10 +36,15 @@ public:
     /** Draws this sub-view */
     virtual void Draw( const D2D1_RECT_F& clientRectAbs, float deltaTime );
 
+    /** Releases the bitmap before the parent view changes render targets */
+    virtual void PrepareResize() override;
+
     /** Sets the image of this panel from d3d11 */
     HRESULT SetD3D11TextureAsImage( ID3D11Texture2D* texture, INT2 size );
 
 protected:
+    HRESULT CreateImageFromTexture();
+
     /** Border color */
     D2D1_COLOR_F PanelColor;
 
@@ -53,4 +59,9 @@ protected:
 
     /** Image */
     ID2D1Bitmap* Image;
+
+    // Sources are standalone editor thumbnails/mesh preview textures, never
+    // swapchain buffers. Retain them to rebuild the bitmap in the new domain.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> ImageSourceTexture;
+    INT2 ImageSize;
 };

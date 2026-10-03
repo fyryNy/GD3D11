@@ -60,6 +60,9 @@ public:
     /** Updates the subview */
     virtual void Update( float deltaTime );
 
+    /** Releases render-target resources while retaining controls */
+    virtual void PrepareResize();
+
     /** Processes a window-message. Return false to stop the message from going to children */
     virtual bool OnWindowMessage( HWND hWnd, unsigned int msg, WPARAM wParam, LPARAM lParam, const D2D1_RECT_F& clientRectAbs );
 
@@ -89,9 +92,6 @@ protected:
 
     /** Destination of this subview */
     D2D1_RECT_F ViewRect;
-
-    /** Layer of this subview */
-    ID2D1Layer* Layer;
 
     /** Pointer to the main-view */
     D2DView* MainView;

@@ -22,6 +22,7 @@ SV_Panel::~SV_Panel() {
 
 /** Draws this sub-view */
 void SV_Panel::Draw( const D2D1_RECT_F& clientRectAbs, float deltaTime ) {
+    if ( !MainView->GetRenderTarget() ) return;
     //Set up the layer for this control
     MainView->GetRenderTarget()->SetTransform( D2D1::Matrix3x2F::Translation( clientRectAbs.left, clientRectAbs.top ) );
 
@@ -42,6 +43,7 @@ void SV_Panel::Draw( const D2D1_RECT_F& clientRectAbs, float deltaTime ) {
         MainView->GetBrush()->SetColor( D2D1::ColorF( 0, 0, 0, darkness ) );
         MainView->GetRenderTarget()->FillRectangle( ViewRect, MainView->GetBrush() );
     } else if ( RenderMode == PR_Image ) {
+        if ( !Image && ImageSourceTexture ) CreateImageFromTexture();
         if ( Image ) {
             MainView->GetRenderTarget()->DrawBitmap( Image, ViewRect );
         } else {
@@ -75,6 +77,12 @@ void SV_Panel::Draw( const D2D1_RECT_F& clientRectAbs, float deltaTime ) {
     D2DSubView::Draw( clientRectAbs, deltaTime );
 }
 
+/** Releases the bitmap before the parent view changes render targets */
+void SV_Panel::PrepareResize() {
+    SAFE_RELEASE( Image );
+    D2DSubView::PrepareResize();
+}
+
 /** Sets the border color */
 void SV_Panel::SetPanelColor( const D2D1_COLOR_F& color ) {
     PanelColor = color;
@@ -99,29 +107,40 @@ D2D1_COLOR_F SV_Panel::GetPanelColor() const {
 /** Sets the image of this panel from d3d11 */
 HRESULT SV_Panel::SetD3D11TextureAsImage( ID3D11Texture2D* texture, INT2 size ) {
     SAFE_RELEASE( Image );
+    ImageSourceTexture = texture;
+    ImageSize = size;
+    if ( !texture || size.x <= 0 || size.y <= 0 ) {
+        ImageSourceTexture.Reset();
+        return E_INVALIDARG;
+    }
+    return CreateImageFromTexture();
+}
 
+HRESULT SV_Panel::CreateImageFromTexture() {
+    if ( !ImageSourceTexture || !MainView->GetRenderTarget() ) return E_FAIL;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
-    HRESULT hr;
     // Since D2D can't load DXTn-Textures on Windows 7, we copy it over to a smaller texture here in d3d11
 
     // Create texture
-    CD3D11_TEXTURE2D_DESC textureDesc( DXGI_FORMAT_B8G8R8A8_UNORM, size.x, size.y, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, 1, 0, 0 );
+    CD3D11_TEXTURE2D_DESC textureDesc( DXGI_FORMAT_B8G8R8A8_UNORM, ImageSize.x, ImageSize.y, 1, 1, 0, D3D11_USAGE_STAGING, D3D11_CPU_ACCESS_READ, 1, 0, 0 );
 
     ComPtr<ID3D11Texture2D> staging;
-    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, nullptr, staging.ReleaseAndGetAddressOf() ) );
+    HRESULT hr = engine->GetDevice()->CreateTexture2D( &textureDesc, nullptr, staging.GetAddressOf() );
+    if ( FAILED( hr ) ) return hr;
 
-    engine->GetContext()->CopyResource( staging.Get(), texture );
+    engine->GetContext()->CopyResource( staging.Get(), ImageSourceTexture.Get() );
 
     D2D1_BITMAP_PROPERTIES properties;
     properties = D2D1::BitmapProperties( D2D1::PixelFormat( DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE ), 0, 0 );
 
     // Get data out
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    engine->GetContext()->Map( staging.Get(), 0, D3D11_MAP_READ, 0, &mapped );
-    MainView->GetRenderTarget()->CreateBitmap( D2D1::SizeU( size.x, size.y ), mapped.pData, mapped.RowPitch, properties, &Image );
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    hr = engine->GetContext()->Map( staging.Get(), 0, D3D11_MAP_READ, 0, &mapped );
+    if ( FAILED( hr ) ) return hr;
+    hr = MainView->GetRenderTarget()->CreateBitmap( D2D1::SizeU( ImageSize.x, ImageSize.y ), mapped.pData, mapped.RowPitch, properties, &Image );
     engine->GetContext()->Unmap( staging.Get(), 0 );
-
-    return S_OK;
+    if ( FAILED( hr ) ) SAFE_RELEASE( Image );
+    return hr;
 }
 
 /** Set if this should have a dark overlay on top */

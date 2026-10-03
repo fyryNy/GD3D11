@@ -4,7 +4,6 @@
 #include "Logger.h"
 
 D2DSubView::D2DSubView( D2DView* view, D2DSubView* parent ) {
-    //Layer = nullptr;
     MainView = view;
     Parent = parent;
     ViewRect = D2D1::RectF( 0, 0, 0, 0 );
@@ -17,13 +16,18 @@ D2DSubView::D2DSubView( D2DView* view, D2DSubView* parent ) {
     } else {
         InitControls();
     }
-
-    MainView->GetRenderTarget()->CreateLayer( nullptr, &Layer );
 }
 
 D2DSubView::~D2DSubView() {
     for ( std::list<D2DSubView*>::const_iterator it = Children.cbegin(); it != Children.cend(); it++ ) {
         delete* it;
+    }
+}
+
+/** Releases render-target resources while retaining controls */
+void D2DSubView::PrepareResize() {
+    for ( D2DSubView* child : Children ) {
+        child->PrepareResize();
     }
 }
 
