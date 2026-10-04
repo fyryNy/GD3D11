@@ -31,6 +31,15 @@ The new renderer is able to utilize more of the current GPU generation's power. 
 
 > **Note**: If you have problems with launching game after installing GD3D11 - for example getting Access Denied(0x45a), reinstall your Visual C++ Redistributable for Visual Studio 2015-2022 to latest version from Microsoft page, mod stopped working on older VCR due to some Microsoft changes in Platform Toolset.
 
+For Gothic II 2.6 NPCs that disappear with an invalid rotation, a rebuilt DLL can trace one named NPC. Add this to `System/GD3D11/UserSettings.ini`, then restart the game and reproduce the issue:
+
+```ini
+[Debug]
+TraceNpcRotation=APFELBAUM_BOTSCHEK_01
+```
+
+The report is written to `System/NpcRotationTrace.log`. It records the first detected invalid write or rejected rotation, including module addresses, registers and stack evidence. Hardware tracing watches up to four transform floats on the game thread; writes from other threads or to unwatched components can be missed. The instruction address is captured immediately after the watched store. Tracing adds overhead while enabled and cannot identify the original writer if the NPC is already corrupt when tracing begins. Remove the key or leave it empty to disable it.
+
 ## Building
 
 ### Latest version

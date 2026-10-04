@@ -127,6 +127,9 @@
     <ClInclude Include="GothicAPI.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="NpcRotationTrace.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
     <ClInclude Include="PortalVisibility.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
@@ -768,6 +771,9 @@
       <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="GothicAPI.cpp">
+      <Filter>Engine\GAPI</Filter>
+    </ClCompile>
+    <ClCompile Include="NpcRotationTrace.cpp">
       <Filter>Engine\GAPI</Filter>
     </ClCompile>
     <ClCompile Include="D3D7\FakeDirectDrawSurface7.cpp">

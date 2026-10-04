@@ -5,6 +5,10 @@
 #include "zCObject.h"
 #include "zCPolygon.h"
 #include "zSTRING.h"
+#include <intrin.h>
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+#include "NpcRotationTrace.h"
+#endif
 
 enum EVobType {
     zVOB_TYPE_NORMAL,
@@ -44,7 +48,145 @@ public:
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCVobSetVisual), Hooked_SetVisual );
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCVobDestructor), Hooked_Destructor );
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCVobEndMovement), Hooked_EndMovement );
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCVobRotateWorld), Hooked_RotateWorld );
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCVobBeginMovement), Hooked_BeginMovement );
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCVobDestroyCollisionObject), Hooked_DestroyCollisionObject );
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCVobSetCollisionObject), Hooked_SetCollisionObject );
+#endif
     }
+
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+    static bool IsRotationTraceTarget( zCVob* vob ) {
+        if ( !NpcRotationTrace::Enabled() )
+            return false;
+        // Once selected, matching does not copy the name on every movement.
+        return NpcRotationTrace::Matches( vob, nullptr )
+            || (NpcRotationTrace::NeedsName() && NpcRotationTrace::Matches( vob, vob->GetName().c_str() ));
+    }
+
+    static void __fastcall Hooked_BeginMovement( zCVob* thisptr, void* unknwn ) {
+        HookedFunctions::OriginalFunctions.original_zCVobBeginMovement( thisptr );
+        if ( IsRotationTraceTarget( thisptr ) ) {
+            void* collisionObject = *reinterpret_cast<void**>(reinterpret_cast<DWORD>(thisptr)
+                + GothicMemoryLocations::zCVob::Offset_CollisionObject);
+            NpcRotationTrace::OnMovement( thisptr, &thisptr->GetWorldMatrixPtr()->_11, collisionObject );
+        }
+    }
+
+    static void __fastcall Hooked_DestroyCollisionObject( zCVob* thisptr, int force ) {
+        const DWORD collisionClass = *reinterpret_cast<DWORD*>(reinterpret_cast<DWORD>(thisptr)
+            + GothicMemoryLocations::zCVob::Offset_CollisionClass);
+        // Persistent character collision objects survive EndMovement; keep
+        // watching them until native code actually frees their allocation.
+        if ( collisionClass && (force || *reinterpret_cast<int*>(collisionClass
+            + GothicMemoryLocations::zCVob::Offset_CollisionClassIsVolatile)) )
+            NpcRotationTrace::BeforeCollisionDelete( thisptr );
+        HookedFunctions::OriginalFunctions.original_zCVobDestroyCollisionObject( thisptr, force );
+    }
+
+    static void __fastcall Hooked_SetCollisionObject( zCVob* thisptr, void* unknwn, void* collisionObject ) {
+        NpcRotationTrace::BeforeCollisionDelete( thisptr );
+        HookedFunctions::OriginalFunctions.original_zCVobSetCollisionObject( thisptr, collisionObject );
+    }
+
+    static void TraceRejectedRotation( zCVob* vob, const char* reason, void* caller,
+        const XMFLOAT3& axis, float angle ) {
+        NpcRotationTrace::Flush();
+        if ( IsRotationTraceTarget( vob ) )
+            NpcRotationTrace::ReportRejectedRotation( vob, reason, caller, &axis.x, angle );
+    }
+
+    static bool MovementFloatIsFinite( float value ) {
+        // Check IEEE-754 exponent bits; floating comparisons can be removed by /fp:fast.
+        const __m128i exponentMask = _mm_set1_epi32( 0x7F800000 );
+        const __m128i exponent = _mm_and_si128( _mm_castps_si128( _mm_set_ss( value ) ), exponentMask );
+        return _mm_cvtsi128_si32( _mm_cmpeq_epi32( exponent, exponentMask ) ) == 0;
+    }
+
+    static bool MovementMatrixIsFinite( const XMFLOAT4X4& matrix ) {
+        const __m128i exponentMask = _mm_set1_epi32( 0x7F800000 );
+        __m128i invalid = _mm_setzero_si128();
+        for ( int row = 0; row < 4; ++row ) {
+            const __m128i exponent = _mm_and_si128( _mm_castps_si128( _mm_loadu_ps( matrix.m[row] ) ), exponentMask );
+            invalid = _mm_or_si128( invalid, _mm_cmpeq_epi32( exponent, exponentMask ) );
+        }
+        return _mm_movemask_epi8( invalid ) == 0;
+    }
+
+    static void LogMovementAnomaly( zCVob* vob, const char* reason, void* caller,
+        const XMFLOAT3* axis = nullptr, const float* angle = nullptr ) {
+        static LONG reports = 0;
+        const LONG report = InterlockedIncrement( &reports );
+        if ( report > 8 )
+            return;
+
+        void* frames[8] = {};
+        const USHORT frameCount = CaptureStackBackTrace( 1, 8, frames, nullptr );
+        std::ostringstream detail;
+        detail << "VOB movement anomaly: " << reason << "; name='" << vob->GetName()
+            << "' vob=" << static_cast<void*>(vob) << " caller=" << caller;
+        if ( axis && angle )
+            detail << " axis=(" << axis->x << "," << axis->y << "," << axis->z << ") angle=" << *angle;
+        detail << " stack=";
+        for ( USHORT i = 0; i < frameCount; ++i )
+            detail << frames[i] << " ";
+        if ( report == 8 )
+            detail << "(further movement anomaly logs suppressed)";
+        LogWarn() << detail.str();
+    }
+
+    static void __fastcall Hooked_RotateWorld( zCVob* thisptr, void* unknwn, const XMFLOAT3& axis, float angle ) {
+        if ( !MovementFloatIsFinite( angle ) ) {
+            TraceRejectedRotation( thisptr, "rejected non-finite RotateWorld angle", _ReturnAddress(), axis, angle );
+            LogMovementAnomaly( thisptr, "rejected non-finite RotateWorld angle", _ReturnAddress(), &axis, &angle );
+            return;
+        }
+        // Gothic returns before reading the axis for a zero-angle rotation.
+        if ( angle == 0.0f ) {
+            HookedFunctions::OriginalFunctions.original_zCVobRotateWorld( thisptr, axis, angle );
+            return;
+        }
+        if ( !MovementFloatIsFinite( axis.x )
+            || !MovementFloatIsFinite( axis.y ) || !MovementFloatIsFinite( axis.z ) ) {
+            TraceRejectedRotation( thisptr, "rejected non-finite RotateWorld input", _ReturnAddress(), axis, angle );
+            LogMovementAnomaly( thisptr, "rejected non-finite RotateWorld input", _ReturnAddress(), &axis, &angle );
+            return;
+        }
+        const float axisLengthSquared = XMVectorGetX( XMVector3LengthSq( XMVectorSet( axis.x, axis.y, axis.z, 0.0f ) ) );
+        if ( axisLengthSquared == 0.0f || !MovementFloatIsFinite( axisLengthSquared ) ) {
+            TraceRejectedRotation( thisptr, "rejected RotateWorld axis that cannot be normalized", _ReturnAddress(), axis, angle );
+            LogMovementAnomaly( thisptr, "rejected RotateWorld axis that cannot be normalized", _ReturnAddress(), &axis, &angle );
+            return;
+        }
+        HookedFunctions::OriginalFunctions.original_zCVobRotateWorld( thisptr, axis, angle );
+    }
+
+    static void GuardMovementTransform( zCVob* vob, DWORD collisionObject, void* caller ) {
+        XMFLOAT4X4& proposed = *reinterpret_cast<XMFLOAT4X4*>(collisionObject + GothicMemoryLocations::zCVob::Offset_CollisionTrafoNew);
+        if ( MovementMatrixIsFinite( proposed ) )
+            return;
+
+        // Persist a hardware capture before containment restores the matrix.
+        NpcRotationTrace::Flush();
+
+        const XMFLOAT4X4& previous = *reinterpret_cast<const XMFLOAT4X4*>(collisionObject + GothicMemoryLocations::zCVob::Offset_CollisionTrafoOld);
+        if ( !MovementMatrixIsFinite( previous ) ) {
+            LogMovementAnomaly( vob, "cannot restore non-finite movement: previous transform is also invalid", caller );
+            return;
+        }
+
+        const XMFLOAT3 position( proposed._14, proposed._24, proposed._34 );
+        proposed = previous;
+        if ( MovementFloatIsFinite( position.x ) && MovementFloatIsFinite( position.y ) && MovementFloatIsFinite( position.z ) ) {
+            proposed._14 = position.x;
+            proposed._24 = position.y;
+            proposed._34 = position.z;
+        }
+        // Native EndMovement still performs collision checks, rebuilds the box and updates BSP membership.
+        LogMovementAnomaly( vob, "contained invalid pending matrix by restoring previous transform", caller );
+    }
+#endif
     
     /** Called when this vob got it's world-matrix changed */
 #ifdef BUILD_GOTHIC_1_08k
@@ -67,14 +209,29 @@ public:
 #else
     static void __fastcall Hooked_EndMovement( zCVob* thisptr, void* unknwn, int transformChanged_hint ) // G2 has one parameter more
     {
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+        NpcRotationTrace::Flush();
+#endif
         hook_infunc
 
         bool vobHasMoved = false;
         if ( (*reinterpret_cast<unsigned char*>(reinterpret_cast<DWORD>(thisptr) + 0x108) & 0x03) && thisptr->GetHomeWorld() ) {
-            vobHasMoved = (*reinterpret_cast<unsigned char*>(*reinterpret_cast<DWORD*>(reinterpret_cast<DWORD>(thisptr) + 0x11C) + 0x88) & 0x03);
+            const DWORD collisionObject = *reinterpret_cast<DWORD*>(reinterpret_cast<DWORD>(thisptr) + 0x11C);
+            if ( collisionObject ) {
+                vobHasMoved = (*reinterpret_cast<unsigned char*>(collisionObject + 0x88) & 0x03);
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+                if ( vobHasMoved && !(*reinterpret_cast<unsigned char*>(reinterpret_cast<DWORD>(thisptr)
+                    + GothicMemoryLocations::zCVob::Offset_MovementState) & GothicMemoryLocations::zCVob::MASK_InsideEndMovement) ) {
+                    GuardMovementTransform( thisptr, collisionObject, _ReturnAddress() );
+                }
+#endif
+            }
         }
 
         HookedFunctions::OriginalFunctions.original_zCVobEndMovement( thisptr, transformChanged_hint );
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+        NpcRotationTrace::Flush();
+#endif
 
         if ( vobHasMoved && transformChanged_hint )
             Engine::GAPI->OnVobMoved( thisptr );
@@ -85,6 +242,9 @@ public:
 
     /** Called on destruction */
     static void __fastcall Hooked_Destructor( zCVob* thisptr, void* unknwn ) {
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+        NpcRotationTrace::RemoveVob( thisptr );
+#endif
         hook_infunc
 
             // Notify the world. We are doing this here for safety so nothing possibly deleted remains in our world.

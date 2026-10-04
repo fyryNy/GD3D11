@@ -4,6 +4,7 @@
 #include <cmath>
 #include "pch.h"
 #include "GothicAPI.h"
+#include "NpcRotationTrace.h"
 #include "PortalOcclusion.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
@@ -182,6 +183,13 @@ void GothicAPI::OnGameStart() {
 
     LoadMenuSettings( MENU_SETTINGS_FILE );
 
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+    char traceSettingsPath[MAX_PATH];
+    const DWORD tracePathLength = GetFullPathNameA( MENU_SETTINGS_FILE, MAX_PATH, traceSettingsPath, nullptr );
+    if ( tracePathLength > 0 && tracePathLength < MAX_PATH )
+        NpcRotationTrace::Initialize( traceSettingsPath );
+#endif
+
     LogInfo() << "Running with Commandline: " << zCOption::GetOptions()->GetCommandline();
 
     // Get forced resolution from commandline
@@ -257,6 +265,9 @@ void GothicAPI::UpdateTextureMaxSize() {
 
 /** Called to update the world, before rendering */
 void GothicAPI::OnWorldUpdate() {
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+    NpcRotationTrace::Flush();
+#endif
 #if BUILD_SPACER
     zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
     BspInfo* root = &BspLeafVobLists[rootBsp];
@@ -581,6 +592,9 @@ void GothicAPI::ReloadPlayerVob() {
 }
 /** Resets only the vobs */
 void GothicAPI::ResetVobs() {
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+    NpcRotationTrace::Reset();
+#endif
     // Clear sections
     for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
         for ( auto&& ity : itx.second ) {
@@ -1616,6 +1630,9 @@ void GothicAPI::LeaveResourceCriticalSection() {
 
 /** Called when a VOB got removed from the world */
 void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+    NpcRotationTrace::RemoveVob( vob );
+#endif
     //LogInfo() << "Removing vob: " << vob;
     Engine::GraphicsEngine->OnVobRemovedFromWorld( vob );
 

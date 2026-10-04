@@ -477,6 +477,17 @@ struct GothicMemoryLocations {
         static const unsigned int MASK_SkeepingMode = 3;
 
         static const unsigned int EndMovement = 0x0061E0D0;
+        static const unsigned int RotateWorld = 0x0061B520;
+        static const unsigned int BeginMovement = 0x0061DA80;
+        static const unsigned int DestroyCollisionObject = 0x0061E6D0;
+        static const unsigned int SetCollisionObject = 0x0061E5E0;
+        static const unsigned int Offset_CollisionClass = 0x118;
+        static const unsigned int Offset_CollisionObject = 0x11C;
+        static const unsigned int Offset_CollisionClassIsVolatile = 0x04;
+        static const unsigned int Offset_MovementState = 0x10C;
+        static const unsigned int MASK_InsideEndMovement = 0x08;
+        static const unsigned int Offset_CollisionTrafoOld = 0x04;
+        static const unsigned int Offset_CollisionTrafoNew = 0x44;
         static const unsigned int SetSleeping = 0x00602930;
     };
 

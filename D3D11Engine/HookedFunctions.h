@@ -62,6 +62,11 @@ typedef void( __thiscall* oCSpawnManagerSpawnNpc )(void*, oCNPC*, const XMFLOAT3
 typedef int( __thiscall* oCSpawnManagerCheckRemoveNpc )(void*, oCNPC*);
 typedef void( __thiscall* oCSpawnManagerCheckInsertNpc )(void*);
 typedef void( __thiscall* zCVobSetVisual )(void*, zCVisual*);
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+typedef void( __thiscall* zCVobRotateWorld )(void*, const XMFLOAT3&, float);
+typedef void( __fastcall* zCVobDestroyCollisionObject )(void*, int);
+typedef void( __thiscall* zCVobSetCollisionObject )(void*, void*);
+#endif
 
 typedef int( __thiscall* zCTex_D3DXTEX_BuildSurfaces )(void*, int);
 typedef int( __thiscall* zCTextureLoadResourceData )(void*);
@@ -152,6 +157,12 @@ struct HookedFunctionInfo {
     oCWorldRemoveVob original_oCWorldRemoveVob = reinterpret_cast<oCWorldRemoveVob>(GothicMemoryLocations::oCWorld::RemoveVob);
     oCWorldRemoveFromLists original_oCWorldRemoveFromLists = reinterpret_cast<oCWorldRemoveFromLists>(GothicMemoryLocations::oCWorld::RemoveFromLists);
     zCVobEndMovement original_zCVobEndMovement = reinterpret_cast<zCVobEndMovement>(GothicMemoryLocations::zCVob::EndMovement);
+#if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
+    zCVobRotateWorld original_zCVobRotateWorld = reinterpret_cast<zCVobRotateWorld>(GothicMemoryLocations::zCVob::RotateWorld);
+    GenericThiscall original_zCVobBeginMovement = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCVob::BeginMovement);
+    zCVobDestroyCollisionObject original_zCVobDestroyCollisionObject = reinterpret_cast<zCVobDestroyCollisionObject>(GothicMemoryLocations::zCVob::DestroyCollisionObject);
+    zCVobSetCollisionObject original_zCVobSetCollisionObject = reinterpret_cast<zCVobSetCollisionObject>(GothicMemoryLocations::zCVob::SetCollisionObject);
+#endif
     GenericThiscall original_zCBspNodeRender = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCBspTree::Render); // Not usable - only for hooking
 #ifdef BUILD_GOTHIC_1_08k
     zCBspBaseCollectPolysInBBox3D original_zCBspBaseCollectPolysInBBox3D = reinterpret_cast<zCBspBaseCollectPolysInBBox3D>(GothicMemoryLocations::zCBspBase::CollectPolysInBBox3D);
