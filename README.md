@@ -42,6 +42,16 @@ The report is written to `System/NpcRotationTrace.log`. It records the first det
 
 ## Building
 
+### Mirrored world with Union
+
+This fork supports the horizontal world reflection supplied by
+`MirroredWorld.patch`. Keep mirror patch in `System`, then use this rebuilt
+renderer. The renderer detects the reflected projection and adjusts face winding
+for world and character draws, including transparent geometry. Shadow cameras
+keep their original winding; the patch preserves screen UI and reverses world
+controls so movement matches the visible direction. No framebuffer copy is used.
+Set `[MIRROR] Enabled=0` in `SystemPack.ini` and restart to disable the reflection.
+
 ### Latest version
 
 Building the mod is currently only possible with windows, but should be easy to do for anyone. To build the mod, you need to do the following:

@@ -397,6 +397,9 @@ public:
     /** Returns the projection-matrix */
     XMFLOAT4X4& GetProjectionMatrix();
 
+    /** Whether the current engine projection reflects the horizontal axis. */
+    bool IsProjectionMirrored() const;
+
     /** Unprojects a pixel-position on the screen */
     void XM_CALLCONV UnprojectXM( FXMVECTOR p, XMVECTOR& worldPos, XMVECTOR& worldDir );
 

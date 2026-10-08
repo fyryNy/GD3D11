@@ -861,6 +861,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GothicAPI.h" />
     <ClInclude Include="NpcRotationTrace.h" />
     <ClInclude Include="PortalVisibility.h" />
+    <ClInclude Include="WorldMirror.h" />
     <ClInclude Include="PortalOcclusion.h" />
     <ClInclude Include="GothicGraphicsState.h" />
     <ClInclude Include="GothicMemoryLocations.h" />

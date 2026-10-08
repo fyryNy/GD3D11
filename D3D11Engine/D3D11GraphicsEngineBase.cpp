@@ -24,6 +24,7 @@ extern bool haveWindAnimations;
 D3D11GraphicsEngineBase::D3D11GraphicsEngineBase() {
     OutputWindow = HWND( 0 );
     PresentPending = false;
+    FFRasterizerStateHash = 0;
 
     // Match the resolution with the current desktop resolution
     Resolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
@@ -284,6 +285,7 @@ XRESULT D3D11GraphicsEngineBase::UpdateRenderStates() {
         }
 
         FFRasterizerState = state->State.Get();
+        FFRasterizerStateHash = Engine::GAPI->GetRendererState().RasterizerState.Hash;
 
         Engine::GAPI->GetRendererState().RasterizerState.StateDirty = false;
         GetContext()->RSSetState( FFRasterizerState.Get() );

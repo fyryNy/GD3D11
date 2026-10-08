@@ -4,6 +4,7 @@
 #include <cmath>
 #include "pch.h"
 #include "GothicAPI.h"
+#include "WorldMirror.h"
 #include "NpcRotationTrace.h"
 #include "PortalOcclusion.h"
 #include "Engine.h"
@@ -3248,6 +3249,12 @@ void GothicAPI::GetInverseViewMatrixXM( XMFLOAT4X4* invView ) {
     }
 
     *invView = zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV );
+}
+
+/** Reflection changes rasterizer winding without changing engine culling. */
+bool GothicAPI::IsProjectionMirrored() const {
+    return WorldMirror::IsReflectedProjection(
+        RendererState.TransformState.TransformProj._11, CameraReplacementPtr != nullptr );
 }
 
 /** Returns the projection-matrix */

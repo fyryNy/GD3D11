@@ -39,6 +39,7 @@
 #include <cmath>
 #include <wrl\client.h>
 #include "D3D11_Helpers.h"
+#include "WorldMirror.h"
 
 #include "D3D11DXVK.h"
 #include "D3D11NVAPI.h"
@@ -2738,26 +2739,35 @@ XRESULT D3D11GraphicsEngine::UpdateRenderStates() {
             0xFFFFFFFF );
     }
 
-    if ( Engine::GAPI->GetRendererState().RasterizerState.StateDirty &&
-        Engine::GAPI->GetRendererState().RasterizerState.Hash !=
-        FFRasterizerStateHash ) {
+    auto& requestedRasterizer = Engine::GAPI->GetRendererState().RasterizerState;
+    auto rasterizer = requestedRasterizer;
+    const bool reflected = (RenderingStage == DES_MAIN || RenderingStage == DES_GHOST) &&
+        Engine::GAPI->IsProjectionMirrored();
+    if ( reflected ) {
+        rasterizer.FrontCounterClockwise = WorldMirror::FrontCounterClockwise(
+            requestedRasterizer.FrontCounterClockwise, true );
+        rasterizer.SetDirty();
+    }
+
+    // Camera/stage transitions can change the effective winding without making
+    // the requested state dirty. Compare the effective hash on every call.
+    if ( rasterizer.Hash != FFRasterizerStateHash ) {
         D3D11RasterizerStateInfo* state = static_cast<D3D11RasterizerStateInfo*>
-            (GothicStateCache::s_RasterizerStateMap[Engine::GAPI->GetRendererState().RasterizerState]);
+            (GothicStateCache::s_RasterizerStateMap[rasterizer]);
 
         if ( !state ) {
             // Create new state
-            state = new D3D11RasterizerStateInfo(
-                Engine::GAPI->GetRendererState().RasterizerState );
+            state = new D3D11RasterizerStateInfo( rasterizer );
 
-            GothicStateCache::s_RasterizerStateMap[Engine::GAPI->GetRendererState().RasterizerState] = state;
+            GothicStateCache::s_RasterizerStateMap[rasterizer] = state;
         }
 
         FFRasterizerState = state->State.Get();
-        FFRasterizerStateHash = Engine::GAPI->GetRendererState().RasterizerState.Hash;
+        FFRasterizerStateHash = rasterizer.Hash;
 
-        Engine::GAPI->GetRendererState().RasterizerState.StateDirty = false;
         GetContext()->RSSetState( FFRasterizerState.Get() );
     }
+    requestedRasterizer.StateDirty = false;
 
     if ( Engine::GAPI->GetRendererState().DepthState.StateDirty &&
         Engine::GAPI->GetRendererState().DepthState.Hash !=
