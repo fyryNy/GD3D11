@@ -68,7 +68,8 @@ public:
                 std::string( s.ToChar(), len ),
                 static_cast<float>( x ),
                 static_cast<float>( y ),
-                thisptr->font, thisptr->fontColor );
+                thisptr->font, thisptr->fontColor, thisptr->pposx,
+                thisptr->pposx + thisptr->psizex - 1 );
         }
     }
     static _zCView* GetScreen() { return *reinterpret_cast<_zCView**>(GothicMemoryLocations::GlobalObjects::screen); }

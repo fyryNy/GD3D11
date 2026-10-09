@@ -175,6 +175,14 @@ struct GothicMemoryLocations {
         static const unsigned int SetVirtualSize = 0x00691f60;
     };
 
+    struct zCFont {
+        static const unsigned int GetFontY = 0x007894E0;
+        static const unsigned int GetWidth = 0x00789520;
+        static const unsigned int GetLetterDistance = 0x00789530;
+        static const unsigned int GetFontData = 0x0078A390;
+        static const unsigned int GetFontTexture = 0x0078A3F0;
+    };
+
     struct zCView {
         static const unsigned int Vtbl_ViewText = 0x0083E344;
         static const unsigned int SetMode = 0x007ABDB0;

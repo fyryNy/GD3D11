@@ -108,7 +108,7 @@ public:
     /** Saves a screenshot */
     virtual void SaveScreenshot() override;
 
-    virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) override;
+    virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor, int clipLeft, int clipRight ) override;
 
     //virtual int MeasureString(std::string str, zFont* zFont) override;
 

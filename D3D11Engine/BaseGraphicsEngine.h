@@ -214,7 +214,7 @@ public:
     /** Draws particle effects */
     virtual void DrawFrameParticles( ParticleRenderPass pass ) {}
 
-    virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {};
+    virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor, int clipLeft, int clipRight ) {};
 
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 };

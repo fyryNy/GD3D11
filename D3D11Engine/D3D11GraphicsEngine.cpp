@@ -7181,57 +7181,63 @@ namespace UI::zFont {
         const std::string& str, size_t strLen,
         float x, float y,
         const ::zFont* font,
-        zColor fontColor, float scale = 1.0f, zCCamera* camera = nullptr ) {
+        zColor fontColor, float scale, zCCamera* camera,
+        int clipLeft, int clipRight ) {
 
-        const float SpaceBetweenChars = 1.0f * scale;
+        // PrintChars uses scaled integer getter results and a separate letter gap.
+        const float letterDistance = static_cast<float>(font->GetLetterDistance()) * scale;
+        const float spaceWidth = static_cast<float>(font->GetWidth( ' ' )) * scale;
+        const int fontHeight = font->GetFontY();
+        const float height = static_cast<float>(fontHeight) * scale - 1.0f;
+        float xpos = x;
 
-        float xpos = x, ypos = y;
+        const float farZ = camera ? camera->GetNearPlane() + 1.0f : 1.0f;
+        const float rhw = 1.0f / farZ;
+        const float zScale = 65534.0f / (65534.0f - 1.0f);
+        const float depth = zScale - zScale * rhw;
 
-        float farZ;
-        if ( camera ) farZ = camera->GetNearPlane() + 1.0f;
-        else                       farZ = 1.0f;
-
-        vertices.resize( strLen * 6 );
+        vertices.reserve( strLen * 6 );
         for ( size_t i = 0; i < strLen; ++i ) {
-            const unsigned char& c = str[i];
+            const unsigned char c = static_cast<unsigned char>(str[i]);
+            if ( c == ' ' ) {
+                xpos += spaceWidth;
+                continue;
+            }
+            if ( c <= 32 ) continue;
 
-            auto topLeft = font->fontuv1[c];
-            auto botRight = font->fontuv2[c];
-            auto widthPx = static_cast<float>( font->width[c] ) * scale;
+            int glyphWidth = 0;
+            zVEC2 topLeft{}, botRight{};
+            font->GetFontData( c, glyphWidth, topLeft, botRight );
+            const float maxx = xpos + static_cast<float>(glyphWidth) * scale - 1.0f;
+            // Match the engine's whole-glyph horizontal clipping.
+            if ( maxx > clipRight ) break;
+            const float minx = xpos;
+            xpos += static_cast<float>(glyphWidth) * scale + letterDistance;
+            if ( minx < clipLeft ) continue;
 
-            ExVertexStruct* vertex = &vertices[i * 6];
-
-            const float widthf = static_cast<float>( widthPx );
-            const float heightf = static_cast<float>( font->height ) * scale;
-
-            const float minx = static_cast<float>( xpos );
-            const float miny = static_cast<float>( ypos );
-
-            // prepare for next glyph
-            if ( c == '\n' ) { ypos += heightf; xpos = x; } else if ( c == ' ' ) { xpos += widthPx; continue; } else { xpos += widthPx + SpaceBetweenChars; }
-
-            const float maxx = (minx + widthf);
-            const float maxy = (miny + heightf);
-
+            const float maxy = y + height;
             const float minu = topLeft.pos.x;
             const float maxu = botRight.pos.x;
             const float minv = topLeft.pos.y;
             const float maxv = botRight.pos.y;
 
-            for ( size_t j = 0; j < 6; j++ ) {
-                vertex[j].Normal = { 1, 0, 0 };
+            const size_t first = vertices.size();
+            vertices.resize( first + 6 );
+            ExVertexStruct* vertex = &vertices[first];
+            for ( size_t j = 0; j < 6; ++j ) {
+                vertex[j].Normal = { rhw, 0, 0 };
                 vertex[j].TexCoord2 = { 0, 1 };
-                vertex[j].Position.z = farZ;
+                vertex[j].Position.z = depth;
                 vertex[j].Color = fontColor.dword;
             }
 
             vertex[0].Position.x = minx;
-            vertex[0].Position.y = miny;
+            vertex[0].Position.y = y;
             vertex[0].TexCoord.x = minu;
             vertex[0].TexCoord.y = minv;
 
             vertex[1].Position.x = maxx;
-            vertex[1].Position.y = miny;
+            vertex[1].Position.y = y;
             vertex[1].TexCoord.x = maxu;
             vertex[1].TexCoord.y = minv;
 
@@ -7251,13 +7257,12 @@ namespace UI::zFont {
             vertex[4].TexCoord.y = maxv;
 
             vertex[5].Position.x = minx;
-            vertex[5].Position.y = miny;
+            vertex[5].Position.y = y;
             vertex[5].TexCoord.x = minu;
             vertex[5].TexCoord.y = minv;
         }
     }
 }
-
 
 float  D3D11GraphicsEngine::UpdateCustomFontMultiplierFontRendering( float multiplier ) {
     float res = unionCurrentCustomFontMultiplier;
@@ -7265,37 +7270,26 @@ float  D3D11GraphicsEngine::UpdateCustomFontMultiplierFontRendering( float multi
     return res; 
 }
 
-void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {
-    if ( !font ) return;
-    if ( !font->tex ) return;
-
-    //
-    // Glyphen anordnen und in den vertices Vector packen
-    // Ggf. Sonderzeichen am Ende entfernen.
-    // 
-    size_t maxLen = str.size();
-    while ( maxLen > 0 && str[maxLen - 1] == '/' ) {
-        --maxLen;
-    }
-    if ( !maxLen ) return;
-
-    float UIScale = 1.0f;
-    static int savedBarSize = -1;
-    if ( oCGame::GetGame() ) {
-        if ( savedBarSize == -1 ) {
-            savedBarSize = oCGame::GetGame()->swimBar->psizex;
-        }
-        UIScale = static_cast<float>(savedBarSize) / 180.f;
-    }
+void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor, int clipLeft, int clipRight ) {
+    if ( !font || str.empty() ) return;
+    zCTexture* tx = font->GetFontTexture();
+    if ( !tx ) return;
 
     constexpr float FONT_CACHE_PRIO = -1;
-    zCTexture* tx = font->tex;
+    if ( tx->CacheIn( FONT_CACHE_PRIO ) != zRES_CACHED_IN ) return;
 
-    if ( tx->CacheIn( FONT_CACHE_PRIO ) != zRES_CACHED_IN ) {
-        return;
-    }
-    
-    UIScale *= unionCurrentCustomFontMultiplier;
+    static std::vector<ExVertexStruct> vertices;
+    vertices.clear();
+    // Engine glyph getters already include interface scaling. The export is
+    // an independent, explicit renderer multiplier and is applied once.
+#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+    zCCamera* camera = nullptr;
+#else
+    zCCamera* camera = zCCamera::GetCamera();
+#endif
+    UI::zFont::AppendGlyphs( vertices, str, str.size(), x, y, font, fontColor,
+        unionCurrentCustomFontMultiplier, camera, clipLeft, clipRight );
+    if ( vertices.empty() ) return;
 
     //
     // Set alpha blending
@@ -7345,15 +7339,6 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     BindViewportInformation( "VS_TransformedEx", 0 );
-
-    //
-    // Convert the characters to verticies which mask the Font-Texture alias
-    //
-
-    static std::vector<ExVertexStruct> vertices;
-    vertices.clear();
-
-    UI::zFont::AppendGlyphs( vertices, str, maxLen, x, y, font, fontColor, UIScale, zCCamera::GetCamera() );
 
     // Bind the texture.
     tx->Bind( 0 );
