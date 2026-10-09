@@ -82,7 +82,16 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	distortionBig += TX_Distortion.Sample(SS_Linear, worldTexCoord * float2(-1,0.7) * DIST_BIG_SCALE + RI_Time * DIST_BIG_SPEED * 1.2).xyz * 2 - 1;
 	distortionBig *= 0.5f;
 	
-	float2 distUV = screenUV + distortionSmall.xy * DIST_SMALL_AMOUNT + distortionBig.xy * DIST_SMALL_AMOUNT;
+	// Wave samples remain in world/material space. Their screen-space X
+	// displacement follows the accepted projection's horizontal orientation.
+	float2 screenDistortionSmall = distortionSmall.xy;
+	float2 screenDistortionBig = distortionBig.xy;
+	if (RI_Projection._11 < 0.0f)
+	{
+		screenDistortionSmall.x = -screenDistortionSmall.x;
+		screenDistortionBig.x = -screenDistortionBig.x;
+	}
+	float2 distUV = screenUV + screenDistortionSmall * DIST_SMALL_AMOUNT + screenDistortionBig * DIST_SMALL_AMOUNT;
 	
 	// Distorted diffuse
 	float3 diffuse = TX_Diffuse.Sample(SS_Linear, Input.vTexcoord + distortionSmall.xy * DIST_SMALL_AMOUNT * 0.5f).rgb;

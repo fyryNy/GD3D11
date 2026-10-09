@@ -69,12 +69,22 @@ XRESULT D3D11PfxRenderer::RenderSMAA() {
 /** Draws a fullscreenquad */
 XRESULT D3D11PfxRenderer::DrawFullScreenQuad() {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& rasterizer = Engine::GAPI->GetRendererState().RasterizerState;
+    const auto savedRasterizer = rasterizer;
+
+    // Fullscreen vertices bypass the world projection and its mirrored winding.
+    rasterizer.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    rasterizer.SetDirty();
     engine->UpdateRenderStates();
 
     engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     //Draw the mesh
     engine->GetContext()->Draw( 3, 0 );
+
+    rasterizer = savedRasterizer;
+    rasterizer.SetDirty();
+    engine->UpdateRenderStates();
 
     return XR_SUCCESS;
 }
