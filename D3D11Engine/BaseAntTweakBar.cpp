@@ -6,6 +6,21 @@
 
 #pragma comment(lib, "AntTweakBar.lib")
 
+namespace {
+    void TW_CALL SetSkyTimeScale( const void* value, void* clientData ) {
+        float& timeScale = *static_cast<float*>(clientData);
+        timeScale = *static_cast<const float*>(value);
+
+        const auto ini = Engine::GAPI->GetStartDirectory() + "\\" + MENU_SETTINGS_FILE;
+        if ( !WritePrivateProfileStringA( "General", "SkyTimeScale", std::to_string( timeScale ).c_str(), ini.c_str() ) )
+            LogWarn() << "Failed to save SkyTimeScale to " << ini;
+    }
+
+    void TW_CALL GetSkyTimeScale( void* value, void* clientData ) {
+        *static_cast<float*>(value) = *static_cast<const float*>(clientData);
+    }
+}
+
 BaseAntTweakBar::BaseAntTweakBar() {
     Bar_General = nullptr;
     Bar_HBAO = nullptr;
@@ -84,8 +99,9 @@ XRESULT BaseAntTweakBar::Init() {
 
     TwAddVarRW( Bar_Sky, "SunLightStrength", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.SunLightStrength, nullptr );
 
-    TwAddVarRW( Bar_Sky, "SkyTimeScale", TW_TYPE_FLOAT, &Engine::GAPI->GetSky()->GetAtmoshpereSettings().SkyTimeScale, nullptr );
-    TwDefine( " Sky/SkyTimeScale  help='This makes the skys time pass slower or faster' " );
+    TwAddVarCB( Bar_Sky, "SkyTimeScale", TW_TYPE_FLOAT, SetSkyTimeScale, GetSkyTimeScale,
+        &Engine::GAPI->GetSky()->GetAtmoshpereSettings().SkyTimeScale,
+        "help='Changes sky speed. Zero keeps the sun fixed. Saved automatically.'" );
 
     Bar_General = TwNewBar( "General" );
     TwDefine( " General position='600 0'" );

@@ -182,6 +182,7 @@ void GothicAPI::OnGameStart() {
     // Get threadid of main thread here because DllMain can be called from different thread
     MainThreadID = GetCurrentThreadId();
 
+    SkyRenderer = std::make_unique<GSky>();
     LoadMenuSettings( MENU_SETTINGS_FILE );
 
 #if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
@@ -223,7 +224,6 @@ void GothicAPI::OnGameStart() {
 
     InitializeCriticalSection( &ResourceCriticalSection );
 
-    SkyRenderer = std::make_unique<GSky>();
     SkyRenderer->InitSky();
 
     Inventory = std::make_unique<GInventory>();
@@ -5075,6 +5075,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "AnimateStaticVobs", std::to_string( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", std::to_string( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", std::to_string( s.SunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SkyTimeScale", std::to_string( GetSkyTimeScale() ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", std::to_string( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawRainThroughTransformFeedback", std::to_string( s.DrawRainThroughTransformFeedback ? TRUE : FALSE ).c_str(), ini.c_str() );
 
@@ -5173,6 +5174,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", defaultRendererSettings.AnimateStaticVobs, ini );
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", defaultRendererSettings.DrawSectionIntersections, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", defaultRendererSettings.SunLightStrength, ini );
+        SkyRenderer->GetAtmoshpereSettings().SkyTimeScale = GetPrivateProfileFloatA( "General", "SkyTimeScale", 1.0f, ini );
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", defaultRendererSettings.DrawG1ForestPortals, ini );
         s.DrawRainThroughTransformFeedback = GetPrivateProfileBoolA( "General", "DrawRainThroughTransformFeedback", defaultRendererSettings.DrawRainThroughTransformFeedback, ini );
 
