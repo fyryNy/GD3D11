@@ -2743,14 +2743,18 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
     // Maybe create more emitters?
     fx->CheckDependentEmitter();
 
+    // Mesh-shaped emitters can render their shape without spawning any particles.
+    if ( zCParticleEmitter* emitter = fx->GetEmitter() ) {
+        if ( emitter->GetVisShpType() == 5 && ParticleEffectProgMeshes.find(source) == ParticleEffectProgMeshes.end() ) {
+            AddParticleEffect( source );
+        }
+    }
+
     zTParticle* pfx = fx->GetFirstParticle();
     if ( pfx ) {
         // Get texture
         zCTexture* texture = nullptr;
         if ( zCParticleEmitter* emitter = fx->GetEmitter() ) {
-            if ( emitter->GetVisShpType() == 5 && ParticleEffectProgMeshes.find(source) == ParticleEffectProgMeshes.end() ) {
-                AddParticleEffect( source );
-            }
             if ( (texture = emitter->GetVisTexture( pfx )) != nullptr ) {
                 // Check if it's loaded
                 if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
@@ -2842,11 +2846,14 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             color.y = p->Color.y / 255.0f;
             color.z = p->Color.z / 255.0f;
 
-            if ( fx->GetEmitter()->GetVisTexAniIsLooping() != 2 ) { // 2 seems to be some magic case with sinus smoothing
-                color.w = std::min( p->Alpha, 255.0f ) / 255.0f;
-            } else {
+            color.w = std::min( p->Alpha, 255.0f ) / 255.0f;
+#ifndef BUILD_GOTHIC_1_08k
+            // Gothic 1 uses particle alpha directly, even for texture looping mode 2.
+            // Only Gothic 2 has the emitter alpha distance used for sinus smoothing.
+            if ( fx->GetEmitter()->GetVisTexAniIsLooping() == 2 ) {
                 color.w = std::min( (zCParticleFX::SinSmooth( fabs( (p->Alpha - fx->GetEmitter()->GetVisAlphaStart()) * fx->GetEmitter()->GetAlphaDist() ) ) * p->Alpha) / 255.0f, 1.0f );
             }
+#endif
 
             color.w = std::max( color.w, 0.0f );
 
