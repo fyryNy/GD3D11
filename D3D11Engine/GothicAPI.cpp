@@ -688,6 +688,9 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
         WorldConverter::ConvertWorldMesh( &polys[0], polys.size(), &WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh, indoorLocation );
     }
 #endif
+    // Portal setup walks the native leaves directly; release this full-world
+    // conversion list before allocating its caches.
+    std::vector<zCPolygon*>().swap( polys );
     BuildRoomPortalVisibility( tree );
     LogInfo() << "Done extracting world!";
 }
@@ -3708,21 +3711,25 @@ void GothicAPI::BuildRoomPortalVisibility( zCBspTree* tree ) {
     // Native BSP traversal applies authored occlusion before activating portals.
     // Ghost occluders deliberately have no DX11 world mesh, but still hide rooms.
     if ( RoomPortalVisibility.HasData() ) {
-        std::vector<zCPolygon*> polygons;
-        tree->GetLOD0Polygons( polygons );
         seen.clear();
-        for ( zCPolygon* polygon : polygons ) {
-            if ( !polygon || !seen.insert( polygon ).second ) {
-                continue;
-            }
-            const PolyFlags* flags = polygon->GetPolyFlags();
-            if ( !flags->GhostOccluder && (!flags->Occluder || flags->PortalPoly) ) {
-                continue;
-            }
-            RoomPortalOccluder occluder;
-            if ( CopyRoomPortalOccluder( polygon, occluder ) ) {
-                RoomPortalAuthoredOccluderLookup.emplace( polygon, RoomPortalOccluders.size() );
-                RoomPortalOccluders.push_back( std::move( occluder ) );
+        // Match GetLOD0Polygons' leaf order without copying every world polygon.
+        // Deduplicate only authored occluders, so ordinary geometry cannot grow
+        // a temporary hash table to millions of entries during a save load.
+        const int leafCount = tree->GetNumLeafes();
+        for ( int leafIndex = 0; leafIndex < leafCount; ++leafIndex ) {
+            const zCBspLeaf* leaf = tree->GetLeaf( leafIndex );
+            for ( int polygonIndex = 0; polygonIndex < leaf->NumPolys; ++polygonIndex ) {
+                zCPolygon* polygon = leaf->PolyList[polygonIndex];
+                if ( !polygon ) continue;
+                const PolyFlags* flags = polygon->GetPolyFlags();
+                if ( !flags->GhostOccluder && (!flags->Occluder || flags->PortalPoly) ) continue;
+                if ( !seen.insert( polygon ).second ) continue;
+
+                RoomPortalOccluder occluder;
+                if ( CopyRoomPortalOccluder( polygon, occluder ) ) {
+                    RoomPortalAuthoredOccluderLookup.emplace( polygon, RoomPortalOccluders.size() );
+                    RoomPortalOccluders.push_back( std::move( occluder ) );
+                }
             }
         }
         BuildRoomPortalOccluderIndex();
