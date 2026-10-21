@@ -424,6 +424,16 @@ protected:
 
     void BuildFrameWaterDepth();
 
+    struct SortedParticle {
+        zCTexture* Texture;
+        const ParticleRenderInfo* RenderInfo;
+        const ParticleInstanceInfo* Instance;
+        float ViewDepth;
+    };
+    // Reuse the per-frame upload/sort storage instead of returning it to the heap.
+    std::vector<SortedParticle> FrameAlphaParticleSort;
+    std::vector<ParticleInstanceInfo> FramePackedParticles;
+
     struct FrameParticleBatch {
         zCTexture* Texture;
         ParticleRenderInfo RenderInfo;

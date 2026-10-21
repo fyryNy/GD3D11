@@ -37,6 +37,7 @@
 #include <locale>
 #include <codecvt>
 #include <cmath>
+#include <limits>
 #include <wrl\client.h>
 #include "D3D11_Helpers.h"
 #include "WorldMirror.h"
@@ -6885,19 +6886,19 @@ void D3D11GraphicsEngine::PrepareFrameParticles(
     FrameAdditiveParticleBatches.clear();
     FrameAlphaParticleBatches.clear();
 
-    struct SortedParticle {
-        zCTexture* Texture;
-        const ParticleRenderInfo* RenderInfo;
-        const ParticleInstanceInfo* Instance;
-        float ViewDepth;
-    };
+    auto& alphaParticles = FrameAlphaParticleSort;
+    auto& packedInstances = FramePackedParticles;
+    alphaParticles.clear();
+    packedInstances.clear();
 
     XMMATRIX sortView = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
-    std::vector<SortedParticle> alphaParticles;
-    std::vector<ParticleInstanceInfo> packedInstances;
-    size_t instanceCount = 0;
-    for ( const auto& textureParticles : particles ) instanceCount += textureParticles.second.size();
-    alphaParticles.reserve( instanceCount );
+    size_t instanceCount = 0, alphaCount = 0;
+    for ( const auto& textureParticles : particles ) {
+        instanceCount += textureParticles.second.size();
+        if ( !textureParticles.second.empty() && info.at( textureParticles.first ).BlendMode != zRND_ALPHA_FUNC_ADD )
+            alphaCount += textureParticles.second.size();
+    }
+    alphaParticles.reserve( alphaCount );
     packedInstances.reserve( instanceCount );
 
     for ( const auto& textureParticles : particles ) {
@@ -6914,6 +6915,8 @@ void D3D11GraphicsEngine::PrepareFrameParticles(
             for ( const ParticleInstanceInfo& instance : textureParticles.second ) {
                 float depth = XMVectorGetZ( XMVector3TransformCoord(
                     XMLoadFloat3( instance.position.toXMFLOAT3() ), sortView ) );
+                // Invalid transforms must not violate the sort comparator's ordering.
+                if ( std::isnan( depth ) ) depth = -std::numeric_limits<float>::infinity();
                 alphaParticles.push_back( { texture, &renderInfo, &instance, depth } );
             }
         }
@@ -6921,8 +6924,9 @@ void D3D11GraphicsEngine::PrepareFrameParticles(
 
     // Sort across textures as well as within each emitter. Radial distance
     // gives the wrong order for particles off to the side.
-    std::stable_sort( alphaParticles.begin(), alphaParticles.end(),
-        []( const SortedParticle& a, const SortedParticle& b ) { return a.ViewDepth > b.ViewDepth; } );
+    const auto fartherFirst = []( const SortedParticle& a, const SortedParticle& b ) { return a.ViewDepth > b.ViewDepth; };
+    if ( !std::is_sorted( alphaParticles.begin(), alphaParticles.end(), fartherFirst ) )
+        std::stable_sort( alphaParticles.begin(), alphaParticles.end(), fartherFirst );
 
     // Keep consecutive texture/blend runs in the global back-to-front order.
     for ( size_t first = 0; first < alphaParticles.size(); ) {

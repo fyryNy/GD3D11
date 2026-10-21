@@ -614,6 +614,10 @@ void GothicAPI::ResetVobs() {
     FrameThunderPolyStrips.clear();
     FlashVisuals.clear();
     ParticleEffectVobs.clear();
+    VisibleParticleEffects.clear();
+    VisibleParticleEffectsReady = false;
+    FrameParticles.clear();
+    FrameParticleInfo.clear();
     RegisteredVobs.clear();
     BspLeafVobLists.clear();
     DynamicallyAddedVobs.clear();
@@ -1064,24 +1068,66 @@ void GothicAPI::DrawWorldMeshNaive() {
     ResetWorldTransform();
 }
 
+bool GothicAPI::NeedsWaterTransparencyPass() {
+    // Ghosts may move their attached emitters during the early draw. In that
+    // case select particles afterwards, preserving the attachment update order.
+    if ( !TransparencyVobs.empty() ) {
+        VisibleParticleEffectsReady = false;
+        return true;
+    }
+    if ( !RendererState.RendererSettings.DrawParticleEffects ) return false;
+
+    if ( !VisibleParticleEffectsReady ) {
+        VisibleParticleEffects.clear();
+        zCCamera::GetCamera()->Activate();
+        GetVisibleParticleEffectsList( VisibleParticleEffects );
+        VisibleParticleEffectsReady = true;
+    }
+    if ( !VisibleParticleEffects.empty() ) return true;
+
+    // Mesh-shaped emitters use distance culling in DrawFrameParticleMeshes,
+    // including meshes whose native particle bounds lie outside the frustum.
+    FXMVECTOR camera = GetCameraPositionXM();
+    for ( const auto& mesh : ParticleEffectProgMeshes ) {
+        float distance;
+        XMStoreFloat( &distance, XMVector3Length( mesh.first->GetPositionWorldXM() - camera ) );
+        if ( distance > RendererState.RendererSettings.VisualFXDrawRadius ) continue;
+        auto* particle = reinterpret_cast<zCParticleFX*>(mesh.first->GetVisual());
+        zCParticleEmitter* emitter = particle ? particle->GetEmitter() : nullptr;
+        if ( emitter && emitter->GetVisShpType() == 5 && emitter->GetVisShpRender() ) return true;
+    }
+    return false;
+}
+
 /** Updates visible particle effects and prepares their instances once per frame */
 void GothicAPI::PrepareParticles() {
     FrameParticleInfo.clear();
-    FrameParticles.clear();
+    // Retain live batches' vector capacity instead of reallocating every frame.
+    // Remove unused keys below so expired effects do not leave a growing cache.
+    for ( auto& batch : FrameParticles ) batch.second.clear();
     ParticleFrameData data;
 
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
-        std::vector<zCVob*> renderedParticleFXs;
-        zCCamera::GetCamera()->Activate();
-        GetVisibleParticleEffectsList( renderedParticleFXs );
+        if ( !VisibleParticleEffectsReady ) {
+            VisibleParticleEffects.clear();
+            zCCamera::GetCamera()->Activate();
+            GetVisibleParticleEffectsList( VisibleParticleEffects );
+        }
+        VisibleParticleEffectsReady = false;
 
         // Simulate each visible effect once and collect its render instances.
-        for ( auto const& it : renderedParticleFXs ) {
+        for ( auto const& it : VisibleParticleEffects ) {
             const zCVisual* vis = it->GetVisual();
             if ( vis ) {
                 DrawParticleFX( it, reinterpret_cast<zCParticleFX*>(const_cast<zCVisual*>(vis)), data );
             }
         }
+    }
+    VisibleParticleEffects.clear();
+    VisibleParticleEffectsReady = false;
+    for ( auto batch = FrameParticles.begin(); batch != FrameParticles.end(); ) {
+        if ( batch->second.empty() ) batch = FrameParticles.erase( batch );
+        else ++batch;
     }
     Engine::GraphicsEngine->PrepareFrameParticles( FrameParticles, FrameParticleInfo );
 }
@@ -1197,8 +1243,10 @@ void GothicAPI::CalcFlashMeshes() {
         XMStoreFloat( &dist1, XMVector3Length( flash->GetStartPositionWorld() - camPos ) );
         XMStoreFloat( &dist2, XMVector3Length( flash->GetEndPositionWorld() - camPos ) );
         if ( dist1 > RendererState.RendererSettings.VisualFXDrawRadius &&
-            dist2 > RendererState.RendererSettings.VisualFXDrawRadius )
+            dist2 > RendererState.RendererSettings.VisualFXDrawRadius ) {
+            ++it;
             continue;
+        }
 
         if ( flash->RenderFlash( polyStrips ) ) {
             zCVob* connectedVob = it->second;
@@ -1554,7 +1602,9 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     }
 
     // Clear
-    std::list<BaseVobInfo*> list = VobsByVisual[visual];
+    const auto visualVobs = VobsByVisual.find( visual );
+    if ( visualVobs == VobsByVisual.end() ) return;
+    const std::list<BaseVobInfo*> list = visualVobs->second;
     if ( _canClearVobsByVisual ) {
         for ( auto const& it : list ) {
             OnRemovedVob( it->Vob, LoadedWorldInfo->MainWorld );
@@ -1576,10 +1626,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
         if ( RendererState.RendererSettings.EnableDebugLog )
             LogInfo() << std::string( className ) << " had " + std::to_string( list.size() ) << " vobs";
 #endif
-
-        VobsByVisual[visual].clear();
-        VobsByVisual.erase( visual );
     }
+    VobsByVisual.erase( visual );
 }
 /** Draws a MeshInfo */
 void GothicAPI::DrawMeshInfo( zCMaterial* mat, MeshInfo* msh ) {
@@ -1631,6 +1679,7 @@ void GothicAPI::LeaveResourceCriticalSection() {
 
 /** Called when a VOB got removed from the world */
 void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
+    VisibleParticleEffectsReady = false;
 #if defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_SPACER_NET)
     NpcRotationTrace::RemoveVob( vob );
 #endif
@@ -1654,13 +1703,17 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
         }
     }
 
-    // Erase the vob from visual-vob map
-    std::list<BaseVobInfo*>& list = VobsByVisual[vob->GetVisual()];
-    for ( auto& vit = list.begin(); vit != list.end(); ++vit ) {
-        if ( (*vit)->Vob == vob ) {
-            list.erase( vit );
-            break; // Can (should!) only be in here once
+    // Removing particles and other untracked visuals must not create empty entries.
+    const auto visualVobs = VobsByVisual.find( visual );
+    if ( visualVobs != VobsByVisual.end() ) {
+        auto& list = visualVobs->second;
+        for ( auto vit = list.begin(); vit != list.end(); ++vit ) {
+            if ( (*vit)->Vob == vob ) {
+                list.erase( vit );
+                break; // Can (should!) only be in here once
+            }
         }
+        if ( list.empty() ) VobsByVisual.erase( visualVobs );
     }
 
     // TODO: This is sometimes NULL
@@ -1973,6 +2026,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             }
             break;
         } else if ( ext == ".PFX" ) {
+            VisibleParticleEffectsReady = false;
             ParticleEffectVobs.push_back( vob );
             break;
         } else if ( ext == ".TGA" ) {
@@ -2719,6 +2773,7 @@ void GothicAPI::DrawSkeletalVN() {
 
 /** Called when a particle system got removed */
 void GothicAPI::OnParticleFXDeleted( zCParticleFX* pfx ) {
+    VisibleParticleEffectsReady = false;
     // Remove this from our list
     size_t i = 0, end = ParticleEffectVobs.size();
     while ( i < end ) {

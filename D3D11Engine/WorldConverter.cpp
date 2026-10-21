@@ -974,15 +974,14 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vx.Color = 0xFFFFFFFF;
             }
 
-            // Create the buffers and sort the mesh into the structure
-            MeshInfo* mi = new MeshInfo;
-
             // Create the indexed mesh
             if ( vertices.empty() ) {
                 LogWarn() << "Empty submesh (#" << i << ") on Visual " << visualName;
                 continue;
             }
 
+            // Create the buffers and sort the mesh into the structure
+            MeshInfo* mi = new MeshInfo;
             mi->Vertices = vertices;
             mi->Indices = indices;
 
@@ -1242,15 +1241,14 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             bbmax.z = bbmax.z < vx.Position.z ? vx.Position.z : bbmax.z;
         }
 
-        // Create the buffers and sort the mesh into the structure
-        MeshInfo* mi = new MeshInfo;
-
         // Create the indexed mesh
         if ( vertices.empty() ) {
             LogWarn() << "Empty submesh (#" << i << ") on Visual " << visual->GetObjectName();
             continue;
         }
 
+        // Create the buffers and sort the mesh into the structure
+        MeshInfo* mi = new MeshInfo;
         mi->Vertices = vertices;
         mi->Indices = indices;
         mi->MeshIndex = i;

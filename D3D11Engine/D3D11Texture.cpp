@@ -273,7 +273,7 @@ XRESULT D3D11Texture::CreateThumbnail() {
     // Copy main texture to it
     engine->GetContext()->PSSetShaderResources( 0, 1, ShaderResourceView.GetAddressOf() );
 
-    ID3D11RenderTargetView* oldRTV[2];
+    ID3D11RenderTargetView* oldRTV[2] = {};
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
 
     engine->GetContext()->OMGetRenderTargets( 2, oldRTV, oldDSV.GetAddressOf() );
@@ -282,6 +282,11 @@ XRESULT D3D11Texture::CreateThumbnail() {
     engine->DrawQuad( INT2( 0, 0 ), INT2( 256, 256 ) );
 
     engine->GetContext()->OMSetRenderTargets( 2, oldRTV, oldDSV.Get() );
+
+    // OMGetRenderTargets adds a reference to every returned view.
+    for ( ID3D11RenderTargetView* rtv : oldRTV ) {
+        if ( rtv ) rtv->Release();
+    }
 
     return XR_SUCCESS;
 }

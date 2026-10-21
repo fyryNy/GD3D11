@@ -474,11 +474,7 @@ public:
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
     /** Checks whether water may need to split transparent objects this frame */
-    bool NeedsWaterTransparencyPass() const {
-        return !TransparencyVobs.empty() ||
-            (RendererState.RendererSettings.DrawParticleEffects &&
-                (!ParticleEffectVobs.empty() || !ParticleEffectProgMeshes.empty()));
-    }
+    bool NeedsWaterTransparencyPass();
 
     /** Updates visible particle effects and prepares their instances once per frame */
     void PrepareParticles();
@@ -817,6 +813,8 @@ private:
 
     /** List of Vobs having a zCParticleFX-Visual */
     std::vector<zCVob*> ParticleEffectVobs;
+    std::vector<zCVob*> VisibleParticleEffects;
+    bool VisibleParticleEffectsReady = false;
     std::vector<zCVob*> DecalVobs;
     std::unordered_map<zCVob*, std::string> tempParticleNames;
 
