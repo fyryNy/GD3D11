@@ -3688,6 +3688,7 @@ void GothicAPI::ResetRoomPortalOcclusion() {
     RoomPortalBlockerViews.clear();
     RoomPortalTarget.clear();
     RoomPortalVisibilityUpdated = false;
+    RoomPortalCameraSectorCache = {};
     ++RoomPortalMeshRevision;
 }
 
@@ -3890,8 +3891,10 @@ bool GothicAPI::IsRoomPortalOccluded( const PortalVisibility::Portal& portal,
             if ( found != RoomPortalRayOccluders.end() ) add( found->second );
         }
     }
-    return PortalOcclusion::IsFullyOccludedViews( RoomPortalTarget,
+    const bool occluded = PortalOcclusion::IsFullyOccludedViews( RoomPortalTarget,
         { camera.x, camera.y, camera.z }, RoomPortalBlockerViews, &RoomPortalWorkBudget );
+    if ( occluded ) cache.LastOccludedFrame = RoomPortalFrame;
+    return occluded;
 }
 
 void GothicAPI::DiscoverRoomPortalOccluders( const PortalVisibility::Vec3& camera ) {
@@ -3899,12 +3902,19 @@ void GothicAPI::DiscoverRoomPortalOccluders( const PortalVisibility::Vec3& camer
     // Cached geometry is always re-proved from the current camera; no hidden
     // decision survives a camera move. Looking around never restarts discovery.
     const XMFLOAT3 start( camera.x, camera.y, camera.z );
-    size_t traceBudget = 16;
-    while ( traceBudget != 0 && !RoomPortalDiscoveryQueue.empty() ) {
+    // Native BSP traces are not covered by the polygon work budget. Spread
+    // discovery across frames instead of allowing a burst of sixteen long rays.
+    size_t traceBudget = 2;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds( 500 );
+    while ( traceBudget != 0 && !RoomPortalDiscoveryQueue.empty() &&
+        std::chrono::steady_clock::now() < deadline ) {
         const auto* portal = RoomPortalDiscoveryQueue.front();
         RoomPortalDiscoveryQueue.pop_front();
         auto& cache = RoomPortalOcclusionCaches[portal];
         cache.Queued = false;
+        // This frame already proved full coverage from the current camera.
+        // More discovery cannot improve that result; resume if it becomes visible.
+        if ( cache.LastOccludedFrame == RoomPortalFrame ) continue;
         const auto used = RoomPortalRoomUseFrames.find( portal->to );
         if ( used == RoomPortalRoomUseFrames.end() || RoomPortalFrame - used->second > 1 ) continue;
         const size_t samples = (std::min)( size_t(16), portal->vertices.size() );
@@ -3962,30 +3972,35 @@ void GothicAPI::UpdateRoomPortalVisibility() {
     }
 
     const XMFLOAT3 cameraPosition = GetCameraPosition();
-    const XMFLOAT3 traceEnd( cameraPosition.x, cameraPosition.y - 50000.0f, cameraPosition.z );
-    XMFLOAT3 hitPosition;
-    zCPolygon* hitPolygon = nullptr;
-    if ( !LoadedWorldInfo->BspTree->TraceRay( cameraPosition, traceEnd, 0x60, hitPosition, hitPolygon ) || !hitPolygon ) {
-        return;
-    }
-
-    size_t cameraSector = 0;
-    const PolyFlags* flags = hitPolygon->GetPolyFlags();
-    if ( flags->SectorPoly ) {
-        const zCMaterial* material = hitPolygon->GetMaterial();
-        if ( !material ) {
+    auto& location = RoomPortalCameraSectorCache;
+    // The BSP is static. Turning the camera in place cannot change its sector.
+    if ( !location.Valid || location.MeshRevision != RoomPortalMeshRevision ||
+        location.Position.x != cameraPosition.x || location.Position.y != cameraPosition.y ||
+        location.Position.z != cameraPosition.z ) {
+        location.Valid = false;
+        const XMFLOAT3 traceEnd( cameraPosition.x, cameraPosition.y - 50000.0f, cameraPosition.z );
+        XMFLOAT3 hitPosition;
+        zCPolygon* hitPolygon = nullptr;
+        if ( !LoadedWorldInfo->BspTree->TraceRay( cameraPosition, traceEnd, 0x60, hitPosition, hitPolygon ) || !hitPolygon ) {
             return;
         }
-        zCBspSector* sector = material->GetBspSectorFront();
-        if ( !flags->PortalPoly || sector ) {
+
+        size_t cameraSector = 0;
+        const PolyFlags* flags = hitPolygon->GetPolyFlags();
+        if ( flags->SectorPoly ) {
+            const zCMaterial* material = hitPolygon->GetMaterial();
+            if ( !material ) return;
+            zCBspSector* sector = material->GetBspSectorFront();
             if ( sector ) {
                 const auto found = RoomPortalSectorIDs.find( sector );
-                if ( found == RoomPortalSectorIDs.end() ) {
-                    return;
-                }
+                if ( found == RoomPortalSectorIDs.end() ) return;
                 cameraSector = found->second;
             }
         }
+        location.Position = { cameraPosition.x, cameraPosition.y, cameraPosition.z };
+        location.Sector = cameraSector;
+        location.MeshRevision = RoomPortalMeshRevision;
+        location.Valid = true;
     }
 
     XMFLOAT4X4 viewProjection;
@@ -3996,7 +4011,7 @@ void GothicAPI::UpdateRoomPortalVisibility() {
     const PortalVisibility::Vec3 camera = { cameraPosition.x, cameraPosition.y, cameraPosition.z };
     RoomPortalWorkBudget = 32768;
     RoomPortalCandidateBudget = 4096;
-    RoomPortalVisibility.Update( matrix, camera, cameraSector,
+    RoomPortalVisibility.Update( matrix, camera, location.Sector,
         [&]( const PortalVisibility::Portal& portal, const std::vector<PortalVisibility::Vec3d>& vertices ) {
             return IsRoomPortalOccluded( portal, vertices, camera );
         } );
@@ -4004,7 +4019,11 @@ void GothicAPI::UpdateRoomPortalVisibility() {
     RoomPortalVisibilityReady = true;
 }
 
-bool GothicAPI::IsVobVisibleInPortalRoom( zCVob* vob ) {
+bool GothicAPI::IsVobVisibleInPortalRoom( VobInfo* info ) {
+    if ( info->PortalVisibilityFrame == RoomPortalFrame ) return info->VisibleInPortalRoom;
+    info->PortalVisibilityFrame = RoomPortalFrame;
+    info->VisibleInPortalRoom = true;
+    zCVob* vob = info->Vob;
     if ( CameraReplacementPtr || !vob || !LoadedWorldInfo ||
         vob->GetHomeWorld() != LoadedWorldInfo->MainWorld || !HasRoomPortalVisibilityData() ) {
         return true;
@@ -4028,8 +4047,9 @@ bool GothicAPI::IsVobVisibleInPortalRoom( zCVob* vob ) {
     if ( !RoomPortalVisibilityReady ) return true;
 
     const zTBBox3D box = vob->GetBBox();
-    return RoomPortalVisibility.IsVisible( found->second,
+    info->VisibleInPortalRoom = RoomPortalVisibility.IsVisible( found->second,
         { box.Min.x, box.Min.y, box.Min.z }, { box.Max.x, box.Max.y, box.Max.z } );
+    return info->VisibleInPortalRoom;
 }
 
 /** Collects vobs using gothics BSP-Tree */
@@ -4075,7 +4095,7 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
                     continue;
                 }
 
-                if ( !IsVobVisibleInPortalRoom( it->Vob ) ) {
+                if ( !IsVobVisibleInPortalRoom( it ) ) {
                     continue;
                 }
 
@@ -4279,7 +4299,7 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
             float vd;
             XMStoreFloat( &vd, XMVector3Length( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
             if ( vd < dist && it->Vob->GetShowVisual() ) {
-                if ( !Engine::GAPI->IsVobVisibleInPortalRoom( it->Vob ) ) {
+                if ( !Engine::GAPI->IsVobVisibleInPortalRoom( it ) ) {
                     continue;
                 }
 

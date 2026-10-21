@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -43,9 +44,8 @@ public:
         context.nextPlaneID = points.size();
 
         // An uncovered interior point proves the doorway cannot be fully hidden.
-        // Keep validated volumes for the exact union proof when samples are covered.
-        std::vector<std::vector<Plane>> volumes;
-        volumes.reserve( blockers.size() );
+        // Test the same shadow half-spaces without allocating volumes or adding
+        // edge-map entries. Covered samples still need the exact union proof.
         Vec3 center{};
         for ( const Vec3& point : points ) {
             center.x += point.x / points.size();
@@ -57,8 +57,11 @@ public:
             samples.push_back( {center.x * 0.37 + point.x * 0.63,
                 center.y * 0.37 + point.y * 0.63, center.z * 0.37 + point.z * 0.63} );
         }
-        std::vector<bool> covered( samples.size(), false );
         const double tolerance = NumericalDistance( points );
+        if ( !SamplesMayBeCovered( samples, blockers, tolerance, context ) ) return false;
+
+        std::vector<std::vector<Plane>> volumes;
+        volumes.reserve( blockers.size() );
         for ( const Polygon* blocker : blockers ) {
             if ( !blocker ) continue;
             if ( !Spend( context, blocker->vertices.size() * blocker->vertices.size() ) ) return false;
@@ -68,28 +71,25 @@ public:
                 continue;
             }
             bool overlaps = true;
+            bool containsPortal = true;
             for ( const Plane& plane : volume ) {
                 if ( !Spend( context, points.size() + 1 ) ) return false;
                 bool someInside = false;
+                const double depthTolerance = (std::max)( tolerance,
+                    std::abs( plane.distance ) * std::numeric_limits<double>::epsilon() * 64 );
                 for ( const Vec3& point : points ) {
-                    someInside = someInside || Dot( plane.normal, point ) - plane.distance >= -tolerance;
+                    const double distance = Dot( plane.normal, point ) - plane.distance;
+                    someInside = someInside || distance >= -tolerance;
+                    if ( distance < 0 || (plane.depth && distance <= depthTolerance) ) containsPortal = false;
                 }
                 if ( !someInside ) { overlaps = false; break; }
             }
-            if ( overlaps ) {
-                for ( size_t i = 0; i < samples.size(); ++i ) {
-                    if ( covered[i] ) continue;
-                    bool inside = true;
-                    if ( !Spend( context, volume.size() ) ) return false;
-                    for ( const Plane& plane : volume ) {
-                        inside = inside && Dot( plane.normal, samples[i] ) - plane.distance >= -tolerance;
-                    }
-                    covered[i] = inside;
-                }
-                volumes.push_back( std::move( volume ) );
-            }
+            // A convex doorway inside every validated half-space is entirely
+            // hidden by this polygon alone. Require strict depth separation,
+            // matching Split's protection for coplanar doorway geometry.
+            if ( overlaps && containsPortal ) return true;
+            if ( overlaps ) volumes.push_back( std::move( volume ) );
         }
-        if ( std::find( covered.begin(), covered.end(), false ) != covered.end() ) return false;
 
         Fragment initial;
         for ( size_t i = 0; i < points.size(); ++i ) {
@@ -281,6 +281,93 @@ private:
             volume.push_back( plane );
         }
         return true;
+    }
+    static bool SamplesMayBeCovered( const std::vector<Vec3>& samples,
+        const std::vector<const Polygon*>& blockers, double tolerance, Context& context ) {
+        std::array<bool, MaxVertices + 1> covered{};
+        size_t uncoveredCount = samples.size();
+        for ( const Polygon* blocker : blockers ) {
+            if ( !blocker || blocker->vertices.size() < 3 || blocker->vertices.size() > MaxVertices ) continue;
+            if ( !Spend( context, blocker->vertices.size() * (samples.size() + 1) ) ) return false;
+
+            // Match RelativeVertices, including duplicate endpoint removal, so
+            // every plane of a valid blocker is identical to BuildShadowVolume.
+            std::array<Vec3, MaxVertices> points;
+            size_t count = 0;
+            bool valid = true;
+            for ( const Vec3& point : blocker->vertices ) {
+                const Vec3 relative = Subtract( point, context.camera );
+                if ( !Finite( point ) || !Finite( relative ) || Magnitude( relative ) > 1.0e100 ) {
+                    valid = false;
+                    break;
+                }
+                if ( count == 0 || !Equal( relative, points[count - 1] ) ) points[count++] = relative;
+            }
+            if ( !valid ) continue;
+            if ( count > 1 && Equal( points[0], points[count - 1] ) ) --count;
+            if ( count < 3 ) continue;
+
+            Face face;
+            bool foundPlane = false;
+            for ( size_t i = 1; i + 1 < count; ++i ) {
+                if ( UnitCross( Subtract( points[i], points[0] ), Subtract( points[i + 1], points[0] ), face.normal ) ) {
+                    foundPlane = true;
+                    break;
+                }
+            }
+            if ( !foundPlane ) continue;
+            face.distance = Dot( face.normal, points[0] );
+            double scale = 1;
+            for ( size_t i = 0; i < count; ++i ) scale = (std::max)( scale, Magnitude( points[i] ) );
+            if ( std::abs( face.distance ) <= scale * std::numeric_limits<double>::epsilon() * 64 ) continue;
+            if ( face.distance < 0 ) {
+                face.normal = Scale( face.normal, -1 );
+                face.distance = -face.distance;
+            }
+
+            std::array<bool, MaxVertices + 1> candidates{};
+            size_t candidateCount = 0;
+            for ( size_t i = 0; i < samples.size(); ++i ) {
+                candidates[i] = !covered[i] && Dot( face.normal, samples[i] ) - face.distance >= -tolerance;
+                if ( candidates[i] ) ++candidateCount;
+            }
+            if ( candidateCount == 0 ) continue;
+
+            Vec3 center{};
+            const double inverseCount = 1.0 / count;
+            for ( size_t i = 0; i < count; ++i ) {
+                center.x += points[i].x * inverseCount;
+                center.y += points[i].y * inverseCount;
+                center.z += points[i].z * inverseCount;
+            }
+            for ( size_t i = 0; i < count && candidateCount != 0; ++i ) {
+                const Vec3& first = points[i];
+                const Vec3& second = points[(i + 1) % count];
+                const bool ordered = Less( first, second );
+                Vec3 normal;
+                if ( !UnitCross( ordered ? first : second, ordered ? second : first, normal ) ) {
+                    valid = false;
+                    break;
+                }
+                const double side = Dot( normal, center );
+                if ( side == 0 || !std::isfinite( side ) ) { valid = false; break; }
+                if ( side < 0 ) normal = Scale( normal, -1 );
+                for ( size_t j = 0; j < samples.size(); ++j ) {
+                    if ( candidates[j] && Dot( normal, samples[j] ) < -tolerance ) {
+                        candidates[j] = false;
+                        --candidateCount;
+                    }
+                }
+            }
+            if ( !valid ) continue;
+            for ( size_t i = 0; i < samples.size(); ++i ) {
+                if ( candidates[i] ) { covered[i] = true; --uncoveredCount; }
+            }
+            if ( uncoveredCount == 0 ) return true;
+        }
+        // Face validity is intentionally deferred. Invalid polygons can only
+        // make this preflight inconclusive; the exact proof still rejects them.
+        return false;
     }
     static bool OnBoundary( const Vertex& vertex, size_t id ) {
         return std::find( vertex.boundaries.begin(), vertex.boundaries.end(), id ) != vertex.boundaries.end();

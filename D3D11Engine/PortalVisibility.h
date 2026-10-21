@@ -29,6 +29,8 @@ public:
         projected.clear();
         projectionState.clear();
         projectedWorld.clear();
+        traversalQueue.clear();
+        traversalQueued.clear();
         ready = false;
     }
 
@@ -50,6 +52,8 @@ public:
         projected.resize( portals.size() );
         projectionState.resize( portals.size() );
         projectedWorld.resize( portals.size() );
+        traversalQueue.reserve( sectorCount );
+        traversalQueued.resize( sectorCount );
         for ( size_t i = 0; i < portals.size(); ++i ) outgoing[portals[i].from].push_back( i );
     }
 
@@ -72,12 +76,13 @@ public:
         std::fill( projectionState.begin(), projectionState.end(), 0 );
         windows[cameraSector] = FullWindow();
 
-        std::vector<size_t> queue{cameraSector};
-        std::vector<bool> queued( windows.size(), false );
-        queued[cameraSector] = true;
-        for ( size_t head = 0; head < queue.size(); ++head ) {
-            const size_t sector = queue[head];
-            queued[sector] = false;
+        traversalQueue.clear();
+        std::fill( traversalQueued.begin(), traversalQueued.end(), 0 );
+        traversalQueue.push_back( cameraSector );
+        traversalQueued[cameraSector] = true;
+        for ( size_t head = 0; head < traversalQueue.size(); ++head ) {
+            const size_t sector = traversalQueue[head];
+            traversalQueued[sector] = false;
             const Rect incoming = windows[sector];
             for ( size_t index : outgoing[sector] ) {
                 const Portal& face = portals[index];
@@ -92,6 +97,11 @@ public:
                 }
                 const Rect visible = Intersect( incoming, projected[index] );
                 if ( !visible.Valid() ) continue;
+                Rect& destination = windows[face.to];
+                const Rect expanded = destination.Valid() ? Union( destination, visible ) : visible;
+                // A portal cannot change visibility if its destination already covers
+                // this window. Leave an untested face eligible for a later expansion.
+                if ( destination == expanded ) continue;
                 // Frustum visibility alone cannot expose a door behind a solid wall.
                 // Test actual clipped geometry once, only for a reachable portal.
                 if ( isOccluded && projectionState[index] == 1 ) {
@@ -101,13 +111,10 @@ public:
                         continue;
                     }
                 }
-                Rect& destination = windows[face.to];
-                const Rect expanded = destination.Valid() ? Union( destination, visible ) : visible;
-                if ( destination == expanded ) continue;
                 destination = expanded;
-                if ( !queued[face.to] ) {
-                    queue.push_back( face.to );
-                    queued[face.to] = true;
+                if ( !traversalQueued[face.to] ) {
+                    traversalQueue.push_back( face.to );
+                    traversalQueued[face.to] = true;
                 }
             }
         }
@@ -242,5 +249,7 @@ private:
     std::vector<Rect> windows, projected;
     std::vector<unsigned char> projectionState;
     std::vector<std::vector<Vec3d>> projectedWorld;
+    std::vector<size_t> traversalQueue;
+    std::vector<unsigned char> traversalQueued;
     bool ready = false;
 };

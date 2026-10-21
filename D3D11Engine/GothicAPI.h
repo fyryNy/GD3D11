@@ -500,7 +500,7 @@ public:
     void CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs );
 
     /** Native room ownership and visible portals constrain static world vobs. */
-    bool IsVobVisibleInPortalRoom( zCVob* vob );
+    bool IsVobVisibleInPortalRoom( VobInfo* info );
     bool HasRoomPortalVisibilityData() const;
 
     /** Collects visible sections from the current camera perspective */
@@ -743,11 +743,17 @@ private:
         std::vector<zCPolygon*> Polygons;
         PortalVisibility::Vec3 DiscoveryPosition{};
         DWORD DiscoveryTime = 0;
-        size_t NextSample = 0;
+        size_t NextSample = 0, LastOccludedFrame = 0;
         bool HasDiscoveryPosition = false, Queued = false;
     };
 
     struct RoomPortalMaterialOpacity { size_t Frame = 0; bool Opaque = false; };
+
+    struct RoomPortalCameraSector {
+        PortalVisibility::Vec3 Position{};
+        size_t Sector = 0, MeshRevision = 0;
+        bool Valid = false;
+    };
 
     void BuildRoomPortalVisibility( zCBspTree* tree );
     void ResetRoomPortalOcclusion();
@@ -929,6 +935,7 @@ private:
     DWORD SceneWetnessLastUpdateMs;
 
     PortalVisibility RoomPortalVisibility;
+    RoomPortalCameraSector RoomPortalCameraSectorCache;
     std::unordered_map<zCBspSector*, size_t> RoomPortalSectorIDs;
     std::vector<RoomPortalOccluder> RoomPortalOccluders;
     std::unordered_map<zCPolygon*, size_t> RoomPortalAuthoredOccluderLookup;

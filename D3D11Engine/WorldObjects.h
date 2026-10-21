@@ -296,6 +296,10 @@ struct VobInfo : public BaseVobInfo {
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
     bool VisibleInRenderPass;
 
+    // Hidden VOBs can occur in several BSP leaves. Test their portal only once per collection.
+    size_t PortalVisibilityFrame = 0;
+    bool VisibleInPortalRoom = true;
+
     /** Section this vob is in */
     WorldMeshSectionInfo* VobSection;
 
