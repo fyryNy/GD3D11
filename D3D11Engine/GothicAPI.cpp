@@ -1435,6 +1435,21 @@ do { \
         UnloadMaterial( it.second->Meshes, mat );
         UnloadMaterial( it.second->SkeletalMeshes, mat );
     }
+    // Node visuals have independent mesh copies with raw native material keys.
+    // A detached visual can be freed and later reused at the same address, so
+    // pointer equality in the draw path alone cannot validate this cache.
+    for ( const auto& vob : SkeletalVobMap ) {
+        if ( !vob.second ) continue;
+        for ( auto& node : vob.second->NodeAttachments ) {
+            for ( MeshVisualInfo* attachment : node.second ) {
+                if ( attachment->Meshes.find( mat ) == attachment->Meshes.end() ) continue;
+                attachment->Visual = nullptr; // Re-extract on the next normal or layered draw.
+                attachment->MeshesByTexture.clear();
+                attachment->MeshesCached.clear();
+                UnloadMaterial( attachment->Meshes, mat );
+            }
+        }
+    }
 #undef UnloadMaterial
 }
 
@@ -1864,8 +1879,11 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     }
     auto svit = SkeletalVobMap.find( vob );
     if ( svit != SkeletalVobMap.end() ) {
-        delete (*svit).second;
+        SkeletalVobInfo* info = svit->second;
         SkeletalVobMap.erase( svit );
+        // Releasing morph attachments can reenter material deletion callbacks.
+        // Keep the partially destroyed attachment cache out of those callbacks.
+        delete info;
     }
 
     // delete light info, if valid
