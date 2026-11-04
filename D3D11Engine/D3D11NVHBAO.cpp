@@ -8,9 +8,15 @@
 
 #pragma comment(lib, "GFSDK_SSAO_D3D11.win32.lib")
 
-D3D11NVHBAO::D3D11NVHBAO() {}
+D3D11NVHBAO::D3D11NVHBAO() = default;
 
-D3D11NVHBAO::~D3D11NVHBAO() {}
+D3D11NVHBAO::~D3D11NVHBAO() = default;
+
+void D3D11NVHBAO::ContextDeleter::operator()( GFSDK_SSAO_Context_D3D11* context ) const noexcept {
+    if ( context ) {
+        context->Release();
+    }
+}
 
 /** Initializes the library */
 XRESULT D3D11NVHBAO::Init() {
@@ -20,19 +26,25 @@ XRESULT D3D11NVHBAO::Init() {
     CustomHeap.new_ = ::operator new;
     CustomHeap.delete_ = ::operator delete;
 
-    GFSDK_SSAO_Status status;
-
-    status = GFSDK_SSAO_CreateContext_D3D11( engine->GetDevice().Get(), &AOContext, &CustomHeap );
-    if ( status != GFSDK_SSAO_OK ) {
+    GFSDK_SSAO_Context_D3D11* context = nullptr;
+    GFSDK_SSAO_Status status = GFSDK_SSAO_CreateContext_D3D11( engine->GetDevice().Get(), &context, &CustomHeap );
+    // The SDK can return a partially initialized context on failure.
+    ContextPtr newContext( context );
+    if ( status != GFSDK_SSAO_OK || !newContext ) {
         LogError() << "Failed to initialize Nvidia HBAO+!";
         return XR_FAILED;
     }
 
+    AOContext = std::move( newContext );
     return XR_SUCCESS;
 }
 
 /** Renders the HBAO-Effect onto the given RTV */
-XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOutputColorRTV ) {
+XRESULT D3D11NVHBAO::Render( ID3D11RenderTargetView* pOutputColorRTV ) {
+    if ( !AOContext || !pOutputColorRTV ) {
+        return XR_FAILED;
+    }
+
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     D3D11_VIEWPORT vp;
@@ -65,7 +77,7 @@ XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOut
 
     GFSDK_SSAO_Output_D3D11 Output;
     Output.Blend.Mode = GFSDK_SSAO_BlendMode( settings.BlendMode );
-    Output.pRenderTargetView = pOutputColorRTV.Get();
+    Output.pRenderTargetView = pOutputColorRTV;
 
     GFSDK_SSAO_Status status;
     status = AOContext->RenderAO( engine->GetContext().Get(), Input, Params, Output );

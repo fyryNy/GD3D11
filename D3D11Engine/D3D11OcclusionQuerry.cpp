@@ -14,14 +14,15 @@ D3D11OcclusionQuerry::D3D11OcclusionQuerry() {
     FrameID = 0;
 }
 
-D3D11OcclusionQuerry::~D3D11OcclusionQuerry() {
-    for ( size_t i = 0; i < Predicates.size(); i++ ) {
-        SAFE_RELEASE( Predicates[i] );
-    }
+D3D11OcclusionQuerry::~D3D11OcclusionQuerry() = default;
+
+void D3D11OcclusionQuerry::ResetForWorld() {
+    Predicates.clear();
+    FrameID = 0;
 }
 
 /** Creates a new predication-object and returns its ID */
-unsigned int D3D11OcclusionQuerry::AddPredicationObject() {
+int D3D11OcclusionQuerry::AddPredicationObject() {
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     HRESULT hr;
@@ -32,10 +33,13 @@ unsigned int D3D11OcclusionQuerry::AddPredicationObject() {
     qd.Query = D3D11_QUERY_OCCLUSION_PREDICATE;
     qd.MiscFlags = 0;
     LE( g->GetDevice()->CreatePredicate( &qd, p.GetAddressOf() ) );
+    if ( FAILED( hr ) || !p ) {
+        return -1;
+    }
 
     // Add to the end of the list and return its ID
-    Predicates.push_back( p.Detach() );
-    return Predicates.size() - 1;
+    Predicates.push_back( std::move( p ) );
+    return static_cast<int>(Predicates.size() - 1);
 }
 
 /** Checks the BSP-Tree for visibility */
@@ -46,12 +50,21 @@ void D3D11OcclusionQuerry::DoOcclusionForBSP( BspInfo* root ) {
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     // Check if this node has it's queryID
-    if ( root->OcclusionInfo.QueryID == -1 ) {
+    if ( root->OcclusionInfo.QueryID < 0 ||
+        static_cast<size_t>(root->OcclusionInfo.QueryID) >= Predicates.size() ) {
         // Add new object
         root->OcclusionInfo.QueryID = AddPredicationObject();
+        root->OcclusionInfo.QueryInProgress = false;
+        if ( root->OcclusionInfo.QueryID < 0 ) {
+            // Keep the subtree visible when GPU queries are unavailable.
+            MarkTreeVisible( root, true, true );
+            return;
+        }
 
         // Create the occlusion-mesh for the node
-        CreateOcclusionNodeMeshFor( root );
+        if ( !root->OcclusionInfo.NodeMesh ) {
+            CreateOcclusionNodeMeshFor( root );
+        }
     }
 
     // Check last frustum-culling state
@@ -95,7 +108,7 @@ void D3D11OcclusionQuerry::DoOcclusionForBSP( BspInfo* root ) {
             return;
         }
         
-        ID3D11Predicate* p = Predicates[root->OcclusionInfo.QueryID];
+        ID3D11Predicate* p = Predicates[root->OcclusionInfo.QueryID].Get();
         
         // Query is done. Save the result!
         UINT32 data = 0;
@@ -226,13 +239,16 @@ void D3D11OcclusionQuerry::DebugVisualizeNodeMesh( MeshInfo* m, const XMFLOAT4& 
 }
 
 /** Marks the entire subtree visible */
-void D3D11OcclusionQuerry::MarkTreeVisible( BspInfo* root, bool visible ) {
+void D3D11OcclusionQuerry::MarkTreeVisible( BspInfo* root, bool visible, bool resetCameraClip ) {
     if ( !root || !root->OriginalNode )
         return;
 
     root->OcclusionInfo.LastVisitedFrameID = FrameID;
     root->OcclusionInfo.VisibleLastFrame = visible;
+    if ( resetCameraClip ) {
+        root->OcclusionInfo.LastCameraClipType = ZTCAM_CLIPTYPE_CROSSING;
+    }
 
-    MarkTreeVisible( root->Front, visible );
-    MarkTreeVisible( root->Back, visible );
+    MarkTreeVisible( root->Front, visible, resetCameraClip );
+    MarkTreeVisible( root->Back, visible, resetCameraClip );
 }

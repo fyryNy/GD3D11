@@ -619,6 +619,7 @@ void GothicAPI::ResetVobs() {
     FrameParticles.clear();
     FrameParticleInfo.clear();
     RegisteredVobs.clear();
+    Engine::GraphicsEngine->OnWorldReset();
     BspLeafVobLists.clear();
     DynamicallyAddedVobs.clear();
     DecalVobs.clear();
@@ -1704,6 +1705,20 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     //LogInfo() << "Removing vob: " << vob;
     Engine::GraphicsEngine->OnVobRemovedFromWorld( vob );
 
+    // Lights without a visual are not in RegisteredVobs, but still own shadow resources.
+    auto lightIt = VobLightMap.find( reinterpret_cast<zCVobLight*>(vob) );
+    if ( lightIt != VobLightMap.end() ) {
+        VobLightInfo* light = lightIt->second;
+        VobLightMap.erase( lightIt );
+        if ( light ) {
+            for ( BspInfo* node : light->ParentBSPNodes ) {
+                node->Lights.erase( std::remove( node->Lights.begin(), node->Lights.end(), light ), node->Lights.end() );
+                node->IndoorLights.erase( std::remove( node->IndoorLights.begin(), node->IndoorLights.end(), light ), node->IndoorLights.end() );
+            }
+            delete light;
+        }
+    }
+
     auto it = RegisteredVobs.find( vob );
     if ( it == RegisteredVobs.end() ) {
         // Not registered
@@ -1744,8 +1759,10 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
             return; // *should* be already deleted from the inventory here. But watch out for dem leaks, dragons be here!
     }
 
-    VobInfo* vi = VobMap[vob];
-    SkeletalVobInfo* svi = SkeletalVobMap[vob];
+    const auto vobIt = VobMap.find( vob );
+    VobInfo* vi = vobIt != VobMap.end() ? vobIt->second : nullptr;
+    const auto skeletalIt = SkeletalVobMap.find( vob );
+    SkeletalVobInfo* svi = skeletalIt != SkeletalVobMap.end() ? skeletalIt->second : nullptr;
 
     // Tell all dynamic lights that we removed a vob they could have cached
     for ( auto& vlit : VobLightMap ) {
@@ -1755,8 +1772,6 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
         if ( svi && vlit.second->LightShadowBuffers )
             vlit.second->LightShadowBuffers->OnVobRemovedFromWorld( svi );
     }
-
-    VobLightInfo* li = VobLightMap[static_cast<zCVobLight*>(vob)];
 
     // Erase it from the particle-effect list
     auto pit = std::find( ParticleEffectVobs.begin(), ParticleEffectVobs.end(), vob );
@@ -1771,15 +1786,10 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
         DecalVobs.pop_back();
     }
 
-    // Erase it from the list of lights
-    VobLightMap.erase( static_cast<zCVobLight*>(vob) );
-
     // Remove from BSP-Cache
     std::vector<BspInfo*>* nodes = nullptr;
     if ( vi )
         nodes = &vi->ParentBSPNodes;
-    else if ( li )
-        nodes = &li->ParentBSPNodes;
     else if ( svi )
         nodes = &svi->ParentBSPNodes;
 
@@ -1807,24 +1817,6 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
                     if ( (*bit) == vi ) {
                         (*bit) = node->SmallVobs.back();
                         node->SmallVobs.pop_back();
-                        break;
-                    }
-                }
-            }
-
-            if ( li && nodes ) {
-                for ( auto bit = node->Lights.begin(); bit != node->Lights.end(); ++bit ) {
-                    if ( (*bit)->Vob == static_cast<zCVobLight*>(vob) ) {
-                        (*bit) = node->Lights.back();
-                        node->Lights.pop_back();
-                        break;
-                    }
-                }
-
-                for ( auto bit = node->IndoorLights.begin(); bit != node->IndoorLights.end(); ++bit ) {
-                    if ( (*bit)->Vob == static_cast<zCVobLight*>(vob) ) {
-                        (*bit) = node->IndoorLights.back();
-                        node->IndoorLights.pop_back();
                         break;
                     }
                 }
@@ -1885,9 +1877,6 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
         // Keep the partially destroyed attachment cache out of those callbacks.
         delete info;
     }
-
-    // delete light info, if valid
-    if ( li ) delete li;
 }
 
 /** Called on a SetVisual-Call of a vob */
@@ -5434,6 +5423,7 @@ void GothicAPI::ApplyWindowPresetSettings( int mode ) {
     zSTRING section( "VIDEO" );
     zSTRING value( windowed ? "1" : "0" );
     zCOption::GetOptions()->WriteString( section, "zStartupWindowed", value );
+    section.Delete();
 }
 
 /** Returns the main-thread id */

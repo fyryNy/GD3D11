@@ -13,6 +13,8 @@
 #include "zCModel.h"
 #include "zCMorphMesh.h"
 #include <set>
+#include <utility>
+#include <limits>
 #include "ConstantBufferStructs.h"
 #include "D3D11ConstantBuffer.h"
 #include "zCMesh.h"
@@ -29,6 +31,12 @@ WorldConverter::~WorldConverter() {}
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
 void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>& outMeshes ) {
+    // The output owns its meshes. Release an older cache before rebuilding it.
+    for ( auto& mesh : outMeshes ) {
+        delete mesh.second;
+    }
+    outMeshes.clear();
+
     INT2 s = GetSectionOfPos( position );
     MeshKey opaqueKey;
     opaqueKey.Material = nullptr;
@@ -41,7 +49,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     FXMVECTOR xmPosition = XMLoadFloat3( position.toXMFLOAT3() );
 
     // Generate the meshes
-    for ( auto const& itx : Engine::GAPI->GetWorldSections() ) {
+    for ( auto const& itx : inSections ) {
         for ( auto const& ity : itx.second ) {
             float px = static_cast<float>(itx.first - s.x);
             float py = static_cast<float>(ity.first - s.y);
@@ -51,10 +59,13 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
                 for ( auto const& it : ity.second.WorldMeshes ) {
                     WorldMeshInfo* m;
 
-                    // Create new mesh-part for alphatested surfaces
+                    // Sections sharing an alpha texture must append to the same mesh.
                     if ( it.first.Texture && it.first.Texture->HasAlphaChannel() ) {
-                        m = new WorldMeshInfo;
-                        outMeshes[it.first] = m;
+                        WorldMeshInfo*& cachedMesh = outMeshes[it.first];
+                        if ( !cachedMesh ) {
+                            cachedMesh = new WorldMeshInfo;
+                        }
+                        m = cachedMesh;
                     } else {
                         // Just use the same mesh for opaque surfaces
                         m = opaqueMesh;
@@ -79,24 +90,34 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     // Index all meshes
     for ( auto it = outMeshes.begin(); it != outMeshes.end();) {
         if ( it->second->Vertices.empty() ) {
+            delete it->second;
             it = outMeshes.erase( it );
             continue;
         }
 
-        std::vector<VERTEX_INDEX> indices;
-        std::vector<ExVertexStruct> vertices;
-        IndexVertices( &it->second->Vertices[0], it->second->Vertices.size(), vertices, indices );
+        {
+            std::vector<VERTEX_INDEX> indices;
+            std::vector<ExVertexStruct> vertices;
+            IndexVertices( &it->second->Vertices[0], it->second->Vertices.size(), vertices, indices );
 
-        it->second->Vertices = vertices;
-        it->second->Indices = indices;
+            const size_t maxIndexedVertices = static_cast<size_t>(std::numeric_limits<VERTEX_INDEX>::max()) + 1;
+            if ( vertices.size() <= maxIndexedVertices ) {
+                it->second->Vertices = std::move( vertices );
+                it->second->Indices = std::move( indices );
+            } else {
+                // Discard narrowed indices and retain the original triangle list.
+                // The shadow-cache draw paths render empty-index meshes without indexing.
+                it->second->Indices.clear();
+            }
+        }
 
-        // Create the buffers
+        // Oversized caches use only a vertex buffer; indexed caches also own an index buffer.
         Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshIndexBuffer );
-
-        // Init and fill them
         it->second->MeshVertexBuffer->Init( &it->second->Vertices[0], it->second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        it->second->MeshIndexBuffer->Init( &it->second->Indices[0], it->second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        if ( !it->second->Indices.empty() ) {
+            Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshIndexBuffer );
+            it->second->MeshIndexBuffer->Init( &it->second->Indices[0], it->second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        }
 
         ++it;
     }
@@ -245,8 +266,8 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 std::vector<VERTEX_INDEX> indices;
                 IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), indexedVertices, indices );
 
-                it.second->Vertices = indexedVertices;
-                it.second->Indices = indices;
+                it.second->Vertices = std::move( indexedVertices );
+                it.second->Indices = std::move( indices );
 
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
@@ -520,8 +541,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 std::vector<VERTEX_INDEX> indices;
                 IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), indexedVertices, indices );
 
-                it.second->Vertices = indexedVertices;
-                it.second->Indices = indices;
+                it.second->Vertices = std::move( indexedVertices );
+                it.second->Indices = std::move( indices );
 
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
@@ -669,7 +690,7 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
 
     // Init and fill them
     section.FullStaticMesh->MeshVertexBuffer->Init( &section.FullStaticMesh->Vertices[0], section.FullStaticMesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += section.FullStaticMesh->Vertices.size() * sizeof( ExVertexStruct );
+    section.FullStaticMesh->UpdateMemoryUsage();
 }
 
 /** Returns what section the given position is in */
@@ -766,6 +787,7 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
         // Init and fill it
         mi->MeshVertexBuffer->Init( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
         mi->MeshIndexBuffer->Init( &indices[0], indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
+        mi->UpdateMemoryUsage();
 
         meshInfo->Meshes[mat].emplace_back( mi );
     }
@@ -894,8 +916,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
             bmi->MeshVertexBuffer->Init( &bmi->Vertices[0], bmi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             bmi->MeshIndexBuffer->Init( &bmi->Indices[0], bmi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
-            Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
-            Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
+            mi->UpdateMemoryUsage();
+            bmi->UpdateMemoryUsage();
 
             skeletalMeshInfo->SkeletalMeshes[mat].emplace_back( mi );
             skeletalMeshInfo->Meshes[mat].emplace_back( bmi );
@@ -1007,8 +1029,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
-            Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
-            Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
+            mi->UpdateMemoryUsage();
 
             zCMaterial* mat = m->Material;
             meshInfo->Meshes[mat].emplace_back( mi );
@@ -1106,6 +1127,7 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     // Init and fill it
     mi->MeshVertexBuffer->Init( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
     mi->MeshIndexBuffer->Init( &indices[0], indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
+    mi->UpdateMemoryUsage();
 
     meshInfo->Meshes[mat].emplace_back( mi );
     meshInfo->Visual = reinterpret_cast<zCVisual*>(mesh);
@@ -1283,8 +1305,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         }
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
-        Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
-        Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
+        mi->UpdateMemoryUsage();
 
         zCMaterial* mat = visual->GetSubmesh( i )->Material;
         meshInfo->Meshes[mat].emplace_back( mi );

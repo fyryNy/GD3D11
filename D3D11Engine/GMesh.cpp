@@ -183,6 +183,8 @@ XRESULT GMesh::LoadCached( const std::string& file ) {
             mi->Indices.resize( numIndices );
             fread( &mi->Indices[0], sizeof( VERTEX_INDEX ) * mi->Indices.size(), 1, f );
 
+            mi->UpdateMemoryUsage();
+
             // Add to GMesh
             Meshes.push_back( mi );
             Textures.push_back( std::string( tx ) );

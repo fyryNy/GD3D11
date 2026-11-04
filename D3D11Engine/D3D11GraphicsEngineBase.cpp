@@ -30,6 +30,12 @@ D3D11GraphicsEngineBase::D3D11GraphicsEngineBase() {
     Resolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
 }
 
+D3D11GraphicsEngineBase::LiveObjectReport::~LiveObjectReport() {
+    if ( Debug ) {
+        Debug->ReportLiveDeviceObjects( static_cast<D3D11_RLDO_FLAGS>(D3D11_RLDO_DETAIL | D3D11_RLDO_IGNORE_INTERNAL) );
+    }
+}
+
 D3D11GraphicsEngineBase::~D3D11GraphicsEngineBase() {
     GothicDepthBufferStateInfo::DeleteCachedObjects();
     GothicBlendStateInfo::DeleteCachedObjects();

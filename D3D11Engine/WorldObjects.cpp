@@ -51,17 +51,45 @@ SectionInstanceCache::~SectionInstanceCache() {
     }
 }
 
+namespace {
+    void UpdateMeshMemoryCounter( unsigned int& total, unsigned int& accounted, size_t bytes ) {
+        // Only remove bytes this mesh actually contributed; untracked world/shadow meshes stay neutral.
+        if ( accounted == 0 && bytes == 0 ) return;
+        total -= std::min( total, accounted );
+        accounted = static_cast<unsigned int>(bytes);
+        total += accounted;
+    }
+}
+
+void MeshInfo::UpdateMemoryUsage() {
+    if ( Engine::GAPI ) {
+        UpdateMeshMemoryCounter( Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize,
+            AccountedVertexDataSize, Vertices.size() * sizeof( ExVertexStruct ) + Indices.size() * sizeof( VERTEX_INDEX ) );
+    }
+}
+
 MeshInfo::~MeshInfo() {
-    //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Indices.size() * sizeof(VERTEX_INDEX);
-    //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Vertices.size() * sizeof(ExVertexStruct);
+    if ( Engine::GAPI ) {
+        UpdateMeshMemoryCounter( Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize,
+            AccountedVertexDataSize, 0 );
+    }
 
     delete MeshVertexBuffer;
     delete MeshIndexBuffer;
 }
 
+void SkeletalMeshInfo::UpdateMemoryUsage() {
+    if ( Engine::GAPI ) {
+        UpdateMeshMemoryCounter( Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize,
+            AccountedVertexDataSize, Vertices.size() * sizeof( ExSkelVertexStruct ) + Indices.size() * sizeof( VERTEX_INDEX ) );
+    }
+}
+
 SkeletalMeshInfo::~SkeletalMeshInfo() {
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Indices.size() * sizeof( VERTEX_INDEX );
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Vertices.size() * sizeof( ExSkelVertexStruct );
+    if ( Engine::GAPI ) {
+        UpdateMeshMemoryCounter( Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize,
+            AccountedVertexDataSize, 0 );
+    }
 
     delete MeshVertexBuffer;
     delete MeshIndexBuffer;
@@ -102,8 +130,7 @@ XRESULT MeshInfo::Create( ExVertexStruct* vertices, unsigned int numVertices, VE
     MeshVertexBuffer->Init( vertices, numVertices * sizeof( ExVertexStruct ) );
     MeshIndexBuffer->Init( indices, numIndices * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
 
-    Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += numVertices * sizeof( ExVertexStruct );
-    Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += numIndices * sizeof( VERTEX_INDEX );
+    UpdateMemoryUsage();
 
     return XR_SUCCESS;
 }

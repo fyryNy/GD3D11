@@ -91,6 +91,9 @@ struct MeshInfo {
 
     virtual ~MeshInfo();
 
+    /** Updates the live CPU vertex/index payload accounted to this mesh. */
+    void UpdateMemoryUsage();
+
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
@@ -101,6 +104,9 @@ struct MeshInfo {
 
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
+
+private:
+    unsigned int AccountedVertexDataSize = 0;
 };
 
 struct WorldMeshInfo : public MeshInfo {
@@ -142,6 +148,9 @@ struct SkeletalMeshInfo {
 
     ~SkeletalMeshInfo();
 
+    /** Updates the live CPU vertex/index payload accounted to this mesh. */
+    void UpdateMemoryUsage();
+
     D3D11VertexBuffer* MeshVertexBuffer;
     D3D11VertexBuffer* MeshIndexBuffer;
     std::vector<ExSkelVertexStruct> Vertices;
@@ -149,6 +158,9 @@ struct SkeletalMeshInfo {
 
     /** Actual visual containing this */
     zCMeshSoftSkin* visual;
+
+private:
+    unsigned int AccountedVertexDataSize = 0;
 };
 
 class zCVisual;

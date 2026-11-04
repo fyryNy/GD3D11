@@ -164,6 +164,9 @@ public:
     virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, void* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ) );
     virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0 );
 
+    /** Releases renderer state associated with the discarded world caches. */
+    void OnWorldReset() override;
+
     /** Called when a vob was removed from the world */
     virtual XRESULT OnVobRemovedFromWorld( zCVob* vob );
 
@@ -207,8 +210,8 @@ public:
     /** Returns the actual resolution of the backbuffer (not supersampled) */
     INT2 GetBackbufferResolution();
 
-    /** Returns the data of the backbuffer */
-    void GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize );
+    /** Transfers a new CPU image to the caller on success; clears outputs on failure. */
+    XRESULT GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) override;
 
     /** Returns the line renderer object */
     BaseLineRenderer* GetLineRenderer();

@@ -144,11 +144,15 @@ void D2DSubView::AddChild( D2DSubView* child ) {
     Children.push_back( child );
 }
 
-/** Deletes a child from this subview */
+/** Deletes an owned child after traversal has finished */
 void D2DSubView::DeleteChild( D2DSubView* child ) {
-    child->SetHidden( true ); // FIXME
-    //Children.remove(child);
-    //delete child;
+    for ( auto it = Children.begin(); it != Children.end(); ++it ) {
+        if ( *it == child ) {
+            Children.erase( it );
+            delete child;
+            return;
+        }
+    }
 }
 
 /** Sets the position and size */

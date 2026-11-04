@@ -38,6 +38,7 @@
 #include <codecvt>
 #include <cmath>
 #include <limits>
+#include <new>
 #include <wrl\client.h>
 #include "D3D11_Helpers.h"
 #include "WorldMirror.h"
@@ -141,6 +142,12 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
 }
 
 D3D11GraphicsEngine::~D3D11GraphicsEngine() {
+    if ( Device ) Device.As( FinalLiveObjectReport.Debug.GetAddressOf() );
+    if ( Context ) {
+        Context->ClearState();
+        Context->Flush();
+    }
+
     GothicDepthBufferStateInfo::DeleteCachedObjects();
     GothicBlendStateInfo::DeleteCachedObjects();
     GothicRasterizerStateInfo::DeleteCachedObjects();
@@ -149,14 +156,6 @@ D3D11GraphicsEngine::~D3D11GraphicsEngine() {
 
     SAFE_DELETE( QuadVertexBuffer );
     SAFE_DELETE( QuadIndexBuffer );
-
-    ID3D11Debug* d3dDebug;
-    Device->QueryInterface( __uuidof(ID3D11Debug), reinterpret_cast<void**>(&d3dDebug) );
-
-    if ( d3dDebug ) {
-        d3dDebug->ReportLiveDeviceObjects( D3D11_RLDO_DETAIL );
-        d3dDebug->Release();
-    }
 
     // Delete Vendor-Specific stuff here
     nvapiDevice.reset();
@@ -3959,9 +3958,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
                 }
 
-                // Draw from wrapped mesh
-                DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                    meshInfoByKey->second->Indices.size(), meshInfoByKey->second->BaseIndexLocation );
+                // Cache geometry owns its buffers; oversized meshes use a triangle list.
+                WorldMeshInfo* cachedMesh = meshInfoByKey->second;
+                if ( !cachedMesh || !cachedMesh->MeshVertexBuffer || !cachedMesh->MeshVertexBuffer->GetVertexBuffer() )
+                    continue;
+
+                if ( cachedMesh->Indices.empty() ) {
+                    DrawVertexBuffer( cachedMesh->MeshVertexBuffer,
+                        static_cast<unsigned int>(cachedMesh->Vertices.size()) );
+                } else if ( cachedMesh->MeshIndexBuffer && cachedMesh->MeshIndexBuffer->GetVertexBuffer() ) {
+                    DrawVertexBufferIndexed( cachedMesh->MeshVertexBuffer, cachedMesh->MeshIndexBuffer,
+                        static_cast<unsigned int>(cachedMesh->Indices.size()), 0 );
+                }
             }
         } else {
             for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
@@ -4273,9 +4281,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     }
                 }
 
-                // Draw from wrapped mesh
-                DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                    meshInfoByKey->second->Indices.size(), 6, meshInfoByKey->second->BaseIndexLocation );
+                // Cache geometry owns its buffers; oversized meshes use a triangle list.
+                WorldMeshInfo* cachedMesh = meshInfoByKey->second;
+                if ( !cachedMesh || !cachedMesh->MeshVertexBuffer || !cachedMesh->MeshVertexBuffer->GetVertexBuffer() )
+                    continue;
+
+                if ( cachedMesh->Indices.empty() ) {
+                    DrawVertexBufferInstanced( cachedMesh->MeshVertexBuffer,
+                        static_cast<unsigned int>(cachedMesh->Vertices.size()), 6, sizeof( ExVertexStruct ), 0 );
+                } else if ( cachedMesh->MeshIndexBuffer && cachedMesh->MeshIndexBuffer->GetVertexBuffer() ) {
+                    DrawVertexBufferInstancedIndexed( cachedMesh->MeshVertexBuffer, cachedMesh->MeshIndexBuffer,
+                        static_cast<unsigned int>(cachedMesh->Indices.size()), 6, 0 );
+                }
             }
         } else {
             for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
@@ -6283,91 +6300,101 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
 }
 
 /** Returns the data of the backbuffer */
-void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) {
-    if ( thumbnail ) {
-        buffersize = INT2( 256, 256 );
-    } else {
-        buffersize = Resolution;
+XRESULT D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) {
+    buffersize = INT2( 0, 0 );
+    pixelsize = 0;
+    if ( !data ) return XR_INVALID_ARG;
+    *data = nullptr;
+
+    const INT2 captureSize = thumbnail ? INT2( 256, 256 ) : Resolution;
+    if ( captureSize.x <= 0 || captureSize.y <= 0
+        || static_cast<size_t>(captureSize.x) > std::numeric_limits<size_t>::max() / 4 / static_cast<size_t>(captureSize.y) ) {
+        return XR_INVALID_ARG;
     }
-    byte* d = new byte[buffersize.x * buffersize.y * 4];
+    if ( !Device || !Context || !HDRBackBuffer || !HDRBackBuffer->GetShaderResView() || !PfxRenderer )
+        return XR_FAILED;
 
-    // Copy HDR scene to backbuffer
+    const size_t rowBytes = static_cast<size_t>(captureSize.x) * 4;
+    const size_t imageBytes = rowBytes * static_cast<size_t>(captureSize.y);
+    const char* captureName = thumbnail ? "Thumbnail" : "GetBackbufferData";
+
+    // Keep every allocation owned locally until the entire capture succeeds.
+    RenderToTextureBuffer rt( GetDevice(), captureSize.x, captureSize.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+    if ( !rt.GetTexture() || !rt.GetRenderTargetView() ) {
+        LogInfo() << captureName << " failed. Render target could not be created";
+        return XR_FAILED;
+    }
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.ArraySize = 1;
+    texDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.Width = captureSize.x;
+    texDesc.Height = captureSize.y;
+    texDesc.MipLevels = 1;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_STAGING;
+
+    HRESULT hr;
+    wrl::ComPtr<ID3D11Texture2D> texture;
+    LE( GetDevice()->CreateTexture2D( &texDesc, nullptr, texture.GetAddressOf() ) );
+    if ( FAILED( hr ) || !texture ) {
+        LogInfo() << captureName << " failed. Staging texture could not be created";
+        return XR_FAILED;
+    }
+
+    std::unique_ptr<byte[]> pixels( new (std::nothrow) byte[imageBytes] );
+    if ( !pixels ) {
+        LogInfo() << captureName << " failed. CPU image allocation failed";
+        return XR_FAILED;
+    }
+
+    // Copy the HDR scene into a CPU-readable 32-bit image.
     SetDefaultStates();
-
-    SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
+    if ( SetActivePixelShader( "PS_PFX_GammaCorrectInv" ) != XR_SUCCESS || !ActivePS )
+        return XR_FAILED;
     ActivePS->Apply();
 
     GammaCorrectConstantBuffer gcb;
     gcb.G_Gamma = Engine::GAPI->GetGammaValue();
     gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
-    gcb.G_TextureSize = buffersize;
+    gcb.G_TextureSize = captureSize;
     gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-
     ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
     ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-    HRESULT hr;
-    auto rt = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), buffersize.x, buffersize.y, DXGI_FORMAT_B8G8R8A8_UNORM );
-    PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), rt->GetRenderTargetView(), buffersize, true );
+    if ( PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), rt.GetRenderTargetView(), captureSize, true ) != XR_SUCCESS )
+        return XR_FAILED;
+    GetContext()->CopyResource( texture.Get(), rt.GetTexture().Get() );
     GetContext()->Flush();
 
-    D3D11_TEXTURE2D_DESC texDesc;
-    texDesc.ArraySize = 1;
-    texDesc.BindFlags = 0;
-    texDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    texDesc.Width = buffersize.x;
-    texDesc.Height = buffersize.y;
-    texDesc.MipLevels = 1;
-    texDesc.MiscFlags = 0;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.SampleDesc.Quality = 0;
-    texDesc.Usage = D3D11_USAGE_STAGING;
-
-    wrl::ComPtr<ID3D11Texture2D> texture;
-    LE( GetDevice()->CreateTexture2D( &texDesc, 0, texture.GetAddressOf() ) );
-    if ( !texture.Get() ) {
-        if ( thumbnail ) {
-            LogInfo() << "Thumbnail failed. Texture could not be created";
-        } else {
-            LogInfo() << "GetBackbufferData failed. Texture could not be created";
-        }
-        return;
+    D3D11_MAPPED_SUBRESOURCE res = {};
+    LE( GetContext()->Map( texture.Get(), 0, D3D11_MAP_READ, 0, &res ) );
+    if ( FAILED( hr ) ) {
+        LogInfo() << captureName << " failed. Staging texture could not be mapped";
+        return XR_FAILED;
     }
-    GetContext()->CopyResource( texture.Get(), rt->GetTexture().Get() );
-    GetContext()->Flush();
-
-    // Get data
-    D3D11_MAPPED_SUBRESOURCE res;
-    if ( SUCCEEDED( GetContext()->Map( texture.Get(), 0, D3D11_MAP_READ, 0, &res ) ) ) {
-        unsigned char* dstData = reinterpret_cast<unsigned char*>(res.pData);
-        unsigned char* srcData = reinterpret_cast<unsigned char*>(d);
-        UINT length = buffersize.x * 4;
-        if ( length == res.RowPitch ) {
-            memcpy( srcData, dstData, length * buffersize.y );
-        } else {
-            if ( length > res.RowPitch ) {
-                length = res.RowPitch;
-            }
-
-            for ( int row = 0; row < buffersize.y; ++row ) {
-                memcpy( srcData, dstData, length );
-                srcData += length;
-                dstData += res.RowPitch;
-            }
-        }
+    if ( !res.pData || res.RowPitch < rowBytes ) {
         GetContext()->Unmap( texture.Get(), 0 );
+        LogInfo() << captureName << " failed. Invalid mapped image layout";
+        return XR_FAILED;
+    }
+
+    const byte* source = static_cast<const byte*>(res.pData);
+    if ( res.RowPitch == rowBytes ) {
+        memcpy( pixels.get(), source, imageBytes );
     } else {
-        if ( thumbnail ) {
-            LogInfo() << "Thumbnail failed";
-        } else {
-            LogInfo() << "GetBackbufferData failed";
+        for ( int row = 0; row < captureSize.y; ++row ) {
+            memcpy( pixels.get() + static_cast<size_t>(row) * rowBytes,
+                source + static_cast<size_t>(row) * res.RowPitch, rowBytes );
         }
     }
-    
+    GetContext()->Unmap( texture.Get(), 0 );
+
+    buffersize = captureSize;
     pixelsize = 4;
-    *data = d;
+    *data = pixels.release();
+    return XR_SUCCESS;
 }
 
 /* Binds the right shader for the given texture */ 
@@ -7058,6 +7085,14 @@ void D3D11GraphicsEngine::DrawFrameParticles( ParticleRenderPass pass ) {
             HDRBackBuffer->GetRenderTargetView(), INT2( 0, 0 ), true );
     }
     if ( predicateEarlyPass ) Context->SetPredication( previousPredicate.Get(), previousPredicateValue );
+}
+
+/** Releases state whose owners belonged to the discarded BSP/world cache. */
+void D3D11GraphicsEngine::OnWorldReset() {
+    if ( Context ) Context->SetPredication( nullptr, FALSE );
+    if ( Occlusion ) Occlusion->ResetForWorld();
+    FrameShadowUpdateLights.clear();
+    DebugPointlight = nullptr;
 }
 
 /** Called when a vob was removed from the world */

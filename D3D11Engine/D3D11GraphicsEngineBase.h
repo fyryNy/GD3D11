@@ -1,6 +1,7 @@
 #pragma once
 #include "basegraphicsengine.h"
 #include <dxgi1_5.h>
+#include <d3d11sdklayers.h>
 
 class D3D11DepthBufferState;
 class D3D11BlendStateInfo;
@@ -132,6 +133,12 @@ public:
     HWND GetOutputWindow() { return OutputWindow; }
 
 protected:
+    // Declared before all resource owners so its destructor reports after they are gone.
+    struct LiveObjectReport {
+        Microsoft::WRL::ComPtr<ID3D11Debug> Debug;
+        ~LiveObjectReport();
+    } FinalLiveObjectReport;
+
     /** Reports failed graphics calls, including the actual device removal reason. */
     XRESULT CheckGraphicsResult( HRESULT result, const char* operation );
 

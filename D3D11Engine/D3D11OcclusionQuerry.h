@@ -9,6 +9,9 @@ public:
     D3D11OcclusionQuerry();
     ~D3D11OcclusionQuerry();
 
+    /** Releases queries when all BSP nodes and their query IDs are discarded. */
+    void ResetForWorld();
+
     /** Advances the frame counter of this */
     void AdvanceFrameCounter();
 
@@ -21,20 +24,20 @@ public:
     /** Ends the occlusion-checks */
     void EndOcclusionPass();
 
-    /** Creates a new predication-object and returns its ID */
-    unsigned int AddPredicationObject();
+    /** Creates a new predication-object, or returns -1 on failure. */
+    int AddPredicationObject();
 
     /** Creates the occlusion-node-mesh for the specific bsp-node */
     void CreateOcclusionNodeMeshFor( BspInfo* node );
 private:
 
     /** Marks the entire subtree visible */
-    void MarkTreeVisible( BspInfo* root, bool visible );
+    void MarkTreeVisible( BspInfo* root, bool visible, bool resetCameraClip = false );
 
     void DebugVisualizeNodeMesh( MeshInfo* m, const XMFLOAT4& color );
 
     /** Simple box predicate */
-    std::vector<ID3D11Predicate*> Predicates;
+    std::vector<Microsoft::WRL::ComPtr<ID3D11Predicate>> Predicates;
 
     /** Current frame */
     unsigned int FrameID;

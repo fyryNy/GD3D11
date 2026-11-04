@@ -132,4 +132,7 @@ protected:
 
     /** List of message boxes */
     std::vector<D2DMessageBox*> MessageBoxes;
+
+    /** Keeps deferred deletion out of active control traversals and callbacks */
+    unsigned int TraversalDepth;
 };

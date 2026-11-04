@@ -9,6 +9,20 @@
 
 #pragma comment(lib, "dwrite.lib")
 
+namespace {
+class ScopedTraversal {
+public:
+    explicit ScopedTraversal( unsigned int& depth ) : Depth( depth ) { ++Depth; }
+    ~ScopedTraversal() { --Depth; }
+
+    ScopedTraversal( const ScopedTraversal& ) = delete;
+    ScopedTraversal& operator=( const ScopedTraversal& ) = delete;
+
+private:
+    unsigned int& Depth;
+};
+}
+
 const D2D1::ColorF GUI_Color1 = D2D1::ColorF( 0.4f, 0.4f, 0.4f, 1.0f );
 const D2D1::ColorF GUI_Color2 = D2D1::ColorF( 0.2f, 0.2f, 0.2f, 1.0f );
 const D2D1::ColorF GUI_Color3 = D2D1::ColorF( 0.1f, 0.1f, 0.1f, 1.0f );
@@ -37,6 +51,7 @@ D2DView::D2DView() {
 
     SettingsDialog = nullptr;
     EditorView = nullptr;
+    TraversalDepth = 0;
 }
 
 D2DView::~D2DView() {
@@ -370,6 +385,7 @@ HRESULT D2DView::InitResources() {
 /** Draws the view */
 void D2DView::Render( float deltaTime ) {
     if ( !RenderTarget || !EditorView || !MainSubView ) return;
+    ScopedTraversal traversal( TraversalDepth );
     if ( !EditorView->IsHidden() ) {
         RenderTarget->BeginDraw();
 
@@ -382,6 +398,10 @@ void D2DView::Render( float deltaTime ) {
 
 /** Updates the view */
 void D2DView::Update( float deltaTime ) {
+    // A message-box callback can re-enter Update before its button returns.
+    if ( !MainSubView || TraversalDepth != 0 ) return;
+    ScopedTraversal traversal( TraversalDepth );
+
     CheckDeadMessageBoxes();
 
     MainSubView->Update( deltaTime );
@@ -389,6 +409,7 @@ void D2DView::Update( float deltaTime ) {
 
 /** Releases all resources needed to resize this view */
 XRESULT D2DView::PrepareResize() {
+    ScopedTraversal traversal( TraversalDepth );
     if ( MainSubView ) MainSubView->PrepareResize();
     ReleaseRenderTargetResources();
     SAFE_RELEASE( RenderTarget );
@@ -398,6 +419,7 @@ XRESULT D2DView::PrepareResize() {
 
 /** Resizes this d2d-view */
 XRESULT D2DView::Resize( const INT2& initialResolution, ID3D11Texture2D* rendertarget ) {
+    ScopedTraversal traversal( TraversalDepth );
     PrepareResize();
     if ( !Factory || !rendertarget || !MainSubView || !EditorView ) return XR_FAILED;
 
@@ -551,25 +573,32 @@ bool D2DView::OnWindowMessage( HWND hWnd, unsigned int msg, WPARAM wParam, LPARA
     if ( !MainSubView )
         return false;
 
+    ScopedTraversal traversal( TraversalDepth );
     return MainSubView->OnWindowMessage( hWnd, msg, wParam, lParam, D2D1::RectF( 0, 0, RenderTarget->GetSize().width, RenderTarget->GetSize().height ) );
 }
 
 float D2DView::GetLabelTextWidth( IDWriteTextLayout* layout, size_t length ) {
-    DWRITE_CLUSTER_METRICS* m = new DWRITE_CLUSTER_METRICS[length];
-    UINT32 lc;
-
-    if ( !layout ) {
+    if ( !layout || length == 0 ) {
         return 0.0f;
     }
 
-    layout->GetClusterMetrics( m, length, &lc );
+    UINT32 clusterCount = 0;
+    HRESULT hr = layout->GetClusterMetrics( nullptr, 0, &clusterCount );
+    if ( (FAILED( hr ) && hr != HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER )) || clusterCount == 0 ) {
+        return 0.0f;
+    }
+
+    std::vector<DWRITE_CLUSTER_METRICS> metrics( clusterCount );
+    hr = layout->GetClusterMetrics( metrics.data(), clusterCount, &clusterCount );
+    if ( FAILED( hr ) ) {
+        return 0.0f;
+    }
 
     float width = 0.0f;
 
-    for ( size_t i = 0; i < length; i++ ) {
-        width += m[i].width;
+    for ( UINT32 i = 0; i < clusterCount; i++ ) {
+        width += metrics[i].width;
     }
-    delete[] m;
 
     return width;
 }
@@ -608,18 +637,21 @@ void D2DView::AddMessageBox( const std::string& caption, const std::string& mess
 
 /** Checks dead message boxes and removes them */
 void D2DView::CheckDeadMessageBoxes() {
-    // FIXME
+    size_t removedCount = 0;
     for ( auto it = MessageBoxes.begin(); it != MessageBoxes.end();) {
         // Delete the messagebox if it is hidden
         if ( (*it)->IsHidden() ) {
-            MainSubView->DeleteChild( *it );
-
+            D2DMessageBox* box = *it;
             it = MessageBoxes.erase( it );
-
-            // Capture mouse again
-            Engine::GAPI->SetEnableGothicInput( true );
+            MainSubView->DeleteChild( box );
+            ++removedCount;
         } else {
             ++it;
         }
+    }
+
+    // Balance each dialog's input lock after iteration; input changes may re-enter the UI.
+    for ( size_t i = 0; i < removedCount; ++i ) {
+        Engine::GAPI->SetEnableGothicInput( true );
     }
 }

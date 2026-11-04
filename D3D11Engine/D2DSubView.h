@@ -21,7 +21,7 @@ public:
     /** Adds a child to this subview */
     void AddChild( D2DSubView* child );
 
-    /** Deletes a child from this subview */
+    /** Deletes an owned child; callers must wait until traversal has finished */
     void DeleteChild( D2DSubView* child );
 
     /** Sets the position and size of this sub-view */

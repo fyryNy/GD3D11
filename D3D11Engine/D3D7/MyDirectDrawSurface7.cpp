@@ -327,13 +327,21 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         extern bool CreatingThumbnail;
 
         // Assume 32-bit
-        byte* data;
-        INT2 buffersize;
-        int pixelSize;
+        byte* data = nullptr;
+        INT2 buffersize( 0, 0 );
+        int pixelSize = 0;
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->ResetPresentPending();
         Engine::GraphicsEngine->OnStartWorldRendering();
-        Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
+        const XRESULT captureResult = Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->ResetPresentPending();
+        CreatingThumbnail = false;
+
+        if ( captureResult != XR_SUCCESS || !data ) {
+            delete[] data;
+            lpDDSurfaceDesc->lpSurface = nullptr;
+            lpDDSurfaceDesc->lPitch = 0;
+            return DDERR_GENERIC;
+        }
 
         lpDDSurfaceDesc->ddpfPixelFormat.dwRGBBitCount = 32;
         lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask = 0x00FF0000;
@@ -346,8 +354,8 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         lpDDSurfaceDesc->dwHeight = buffersize.y;
         lpDDSurfaceDesc->lpSurface = data;
 
+        delete[] LockedData;
         LockedData = data;
-        CreatingThumbnail = false;
 
         return S_OK;
     }
