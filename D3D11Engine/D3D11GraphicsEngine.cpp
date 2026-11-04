@@ -142,7 +142,7 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
 }
 
 D3D11GraphicsEngine::~D3D11GraphicsEngine() {
-    if ( Device ) Device.As( FinalLiveObjectReport.Debug.GetAddressOf() );
+    if ( Device ) Device.As( &FinalLiveObjectReport.Debug );
     if ( Context ) {
         Context->ClearState();
         Context->Flush();
