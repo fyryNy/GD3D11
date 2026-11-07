@@ -14,7 +14,7 @@
 #include <locale>
 
 constexpr int UI_WIN_SIZE_X = 540;
-constexpr int UI_WIN_SIZE_Y = 410;
+constexpr int UI_WIN_SIZE_Y = 430;
 
 #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
 extern bool haveWindAnimations;
@@ -469,6 +469,21 @@ XRESULT D2DSettingsDialog::InitControls() {
 	dynShadowSlider->SetMinMax( 0.0f, GothicRendererSettings::_PLS_NUM_SETTINGS - 1 );
 	dynShadowSlider->SetDisplayValues( { "Disabled", "Static", "Update dynamic", "Full" } );
 	dynShadowSlider->SetValue( static_cast<float>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows) );
+
+	SV_Label* indoorBrightnessLabel = new SV_Label( MainView, MainPanel );
+	indoorBrightnessLabel->SetPositionAndSize( D2D1::Point2F( 10, 10 ), D2D1::SizeF( 150, 12 ) );
+	indoorBrightnessLabel->AlignUnder( dynShadowSlider, 8 );
+    switch ( userLanguage ) {
+    case LANGUAGE_POLISH: indoorBrightnessLabel->SetCaption( L"Jasność (Indoor):" ); break;
+    default: indoorBrightnessLabel->SetCaption( L"Indoor brightness:" ); break;
+    }
+
+	SV_Slider* indoorBrightnessSlider = new SV_Slider( MainView, MainPanel );
+	indoorBrightnessSlider->SetPositionAndSize( D2D1::Point2F( 10, 22 ), D2D1::SizeF( 150, 15 ) );
+	indoorBrightnessSlider->AlignUnder( indoorBrightnessLabel, 5 );
+	indoorBrightnessSlider->SetDataToUpdate( &Engine::GAPI->GetRendererState().RendererSettings.IndoorWorldBrightness );
+	indoorBrightnessSlider->SetMinMax( 0.0f, 1.0f );
+	indoorBrightnessSlider->SetValue( Engine::GAPI->GetRendererState().RendererSettings.IndoorWorldBrightness );
 
 	// Third column
 	// FOV

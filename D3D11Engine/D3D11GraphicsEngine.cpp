@@ -5934,19 +5934,13 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
     // Modify lightsettings when indoor
     if ( Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
         zBSP_MODE_INDOOR ) {
-        // TODO: fix caves in Gothic 1 being way too dark. Remove this workaround.
-#if BUILD_GOTHIC_1_08k
-        // Kirides: Nah, just make it dark enough.
-        scb.SQ_ShadowStrength = 0.085f;
-#else
-        // Turn off shadows
-        scb.SQ_ShadowStrength = 0.0f;
-#endif
+        const float indoorBrightness = Engine::GAPI->GetRendererState().RendererSettings.IndoorWorldBrightness;
+        scb.SQ_ShadowStrength = indoorBrightness;
 
         // Only use world AO
         scb.SQ_WorldAOStrength = 1.0f;
         // Darken the lights
-        scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
+        scb.SQ_LightColor = float4( 1, 1, 1, indoorBrightness );
     }
 
     ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &scb );

@@ -680,6 +680,7 @@ struct GothicRendererSettings {
         HDR_Monitor = false;
         HDRPaperWhiteNits = 203.0f;
         HDRPeakNits = 0.0f;
+        IndoorWorldBrightness = 0.15f;
         EnableInactiveFpsLock = true;
         MTResoureceManager = false;
         CompressBackBuffer = false;
@@ -846,6 +847,7 @@ struct GothicRendererSettings {
     // Append new settings to preserve offsets exposed by GDX_GetRendererSettings.
     float HDRPaperWhiteNits;
     float HDRPeakNits; // Zero uses the display's reported peak luminance.
+    float IndoorWorldBrightness;
 };
 
 struct GothicRendererTiming {

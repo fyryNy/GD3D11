@@ -842,6 +842,10 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
         s.SectionDrawRadius = GetPrivateProfileFloatA( "General", "SectionDrawRadius", s.SectionDrawRadius, ini );
     }
 
+    s.IndoorWorldBrightness = GetPrivateProfileFloatA( "General", "IndoorWorldBrightness", s.IndoorWorldBrightness, ini );
+    if ( !std::isfinite( s.IndoorWorldBrightness ) ) s.IndoorWorldBrightness = 0.15f;
+    s.IndoorWorldBrightness = std::clamp( s.IndoorWorldBrightness, 0.0f, 2.0f );
+
     s.ReplaceSunDirection = GetPrivateProfileBoolA( "Atmoshpere", "ReplaceSunDirection", s.ReplaceSunDirection, ini );
 
     AtmosphereSettings& aS = GetSky()->GetAtmoshpereSettings();
@@ -890,6 +894,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
     WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", std::to_string( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SkeletalMeshDrawRadius", std::to_string( s.SkeletalMeshDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SectionDrawRadius", std::to_string( s.SectionDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "IndoorWorldBrightness", std::to_string( s.IndoorWorldBrightness ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Atmoshpere", "ReplaceSunDirection", std::to_string( s.ReplaceSunDirection ? TRUE : FALSE ).c_str(), ini.c_str() );
 
@@ -5174,6 +5179,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "SkyTimeScale", std::to_string( GetSkyTimeScale() ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", std::to_string( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawRainThroughTransformFeedback", std::to_string( s.DrawRainThroughTransformFeedback ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "IndoorWorldBrightness", std::to_string( s.IndoorWorldBrightness ).c_str(), ini.c_str() );
 
     /*
     * Draw-distance is saved on a per World basis using SaveRendererWorldSettings
@@ -5273,6 +5279,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         SkyRenderer->GetAtmoshpereSettings().SkyTimeScale = GetPrivateProfileFloatA( "General", "SkyTimeScale", 1.0f, ini );
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", defaultRendererSettings.DrawG1ForestPortals, ini );
         s.DrawRainThroughTransformFeedback = GetPrivateProfileBoolA( "General", "DrawRainThroughTransformFeedback", defaultRendererSettings.DrawRainThroughTransformFeedback, ini );
+        s.IndoorWorldBrightness = GetPrivateProfileFloatA( "General", "IndoorWorldBrightness", defaultRendererSettings.IndoorWorldBrightness, ini );
+        if ( !std::isfinite( s.IndoorWorldBrightness ) ) s.IndoorWorldBrightness = defaultRendererSettings.IndoorWorldBrightness;
+        s.IndoorWorldBrightness = std::clamp( s.IndoorWorldBrightness, 0.0f, 2.0f );
 
         /*
         * Draw-distance is Loaded on a per World basis using LoadRendererWorldSettings

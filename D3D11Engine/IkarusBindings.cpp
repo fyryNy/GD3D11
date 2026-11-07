@@ -67,6 +67,15 @@ extern "C"
         Engine::GAPI->GetRendererState().RendererSettings.WorldAOStrength = strength;
     }
 
+    /** Sets indoor world ambient brightness */
+    __declspec(dllexport) void __cdecl GDX_SetIndoorWorldBrightness( float brightness ) {
+        Engine::GAPI->GetRendererState().RendererSettings.IndoorWorldBrightness = brightness;
+    }
+
+    __declspec(dllexport) float __cdecl GDX_GetIndoorWorldBrightness() {
+        return Engine::GAPI->GetRendererState().RendererSettings.IndoorWorldBrightness;
+    }
+
     /** Callback for the messageboxes */
     static void MB_Callback( ED2D_MB_ACTION action, void* userdata ) {
         int* id = reinterpret_cast<int*>(userdata);

@@ -175,8 +175,8 @@ XRESULT BaseAntTweakBar::Init() {
     TwAddVarRW( Bar_General, "WorldAOStrength", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.WorldAOStrength, nullptr );
     TwDefine( " General/WorldAOStrength  step=0.01 min=0" );
 
-    TwAddVarRW( Bar_General, "ShadowStrength", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.ShadowStrength, nullptr );
-    TwDefine( " General/ShadowStrength  step=0.01 min=0" );
+    TwAddVarRW( Bar_General, "IndoorWorldBrightness", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.IndoorWorldBrightness, nullptr );
+    TwDefine( " General/IndoorWorldBrightness  step=0.01 min=0 help='Brightness of indoor game worlds' " );
 
     TwAddVarRW( Bar_General, "WireframeWorld", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.WireframeWorld, nullptr );
     TwAddVarRW( Bar_General, "WireframeVobs", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.WireframeVobs, nullptr );
